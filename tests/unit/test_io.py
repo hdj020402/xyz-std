@@ -5,7 +5,13 @@ import pytest
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from xyz_std.io import xyz_to_rdkit_mol, xyz_to_symbols_coords, write_multi_xyz
+from xyz_std.io import (
+    xyz_to_rdkit_mol,
+    xyz_to_symbols_coords,
+    write_multi_xyz,
+    format_xyz,
+    standardize_xyz,
+)
 
 
 def _mol_to_xyz_str(mol: Chem.Mol) -> str:
@@ -65,7 +71,7 @@ class TestXyzToRdkitMol:
 
 
 class TestXyzToSymbolsCoords:
-    def test_basic(self, tmp_path):
+    def test_from_file(self, tmp_path):
         xyz_content = "3\ntest\nC  0.0 0.0 0.0\nH  1.0 0.0 0.0\nH  0.0 1.0 0.0\n"
         xyz_file = tmp_path / "test.xyz"
         xyz_file.write_text(xyz_content)
@@ -74,6 +80,13 @@ class TestXyzToSymbolsCoords:
         assert symbols == ["C", "H", "H"]
         assert coords.shape == (3, 3)
         np.testing.assert_allclose(coords[0], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(coords[1], [1.0, 0.0, 0.0])
+
+    def test_from_string(self):
+        xyz_str = "3\ntest\nC  0.0 0.0 0.0\nH  1.0 0.0 0.0\nH  0.0 1.0 0.0\n"
+        symbols, coords = xyz_to_symbols_coords(xyz_str)
+        assert symbols == ["C", "H", "H"]
+        assert coords.shape == (3, 3)
         np.testing.assert_allclose(coords[1], [1.0, 0.0, 0.0])
 
 
@@ -107,3 +120,98 @@ class TestWriteMultiXyz:
         read_syms, read_coords = xyz_to_symbols_coords(str(output))
         assert read_syms == symbols
         np.testing.assert_allclose(read_coords, coords[0], atol=1e-5)
+
+
+class TestFormatXyz:
+    def test_basic(self):
+        symbols = ["C", "H"]
+        coords = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        result = format_xyz(symbols, coords, comment="test")
+        lines = result.strip().split("\n")
+        assert lines[0] == "2"
+        assert lines[1] == "test"
+        assert "C" in lines[2]
+        assert "H" in lines[3]
+
+    def test_round_trip_with_parse(self):
+        symbols = ["O", "H", "H"]
+        coords = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
+        xyz_str = format_xyz(symbols, coords)
+        parsed_syms, parsed_coords = xyz_to_symbols_coords(xyz_str)
+        assert parsed_syms == symbols
+        np.testing.assert_allclose(parsed_coords, coords, atol=1e-5)
+
+
+class TestStandardizeXyz:
+    def test_from_string(self):
+        mol = Chem.MolFromSmiles("CCO")
+        mol = Chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        xyz_str = _mol_to_xyz_str(mol)
+
+        result = standardize_xyz(xyz_str)
+        # Should be a valid XYZ string
+        lines = result.strip().split("\n")
+        assert int(lines[0]) == mol.GetNumAtoms()
+        # Heavy atoms (C, C, O) should come first
+        atom_lines = lines[2:]
+        symbols = [line.split()[0] for line in atom_lines]
+        n_heavy = sum(1 for s in symbols if s != "H")
+        for s in symbols[:n_heavy]:
+            assert s != "H"
+        for s in symbols[n_heavy:]:
+            assert s == "H"
+
+    def test_from_file(self, tmp_path):
+        mol = Chem.MolFromSmiles("CC")
+        mol = Chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        xyz_str = _mol_to_xyz_str(mol)
+
+        input_file = tmp_path / "input.xyz"
+        input_file.write_text(xyz_str)
+
+        result = standardize_xyz(str(input_file))
+        lines = result.strip().split("\n")
+        assert int(lines[0]) == 8  # 2C + 6H
+
+    def test_output_to_file(self, tmp_path):
+        mol = Chem.MolFromSmiles("C")
+        mol = Chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        xyz_str = _mol_to_xyz_str(mol)
+
+        output_file = tmp_path / "output.xyz"
+        result = standardize_xyz(xyz_str, output_path=str(output_file))
+
+        # Should return string AND write file
+        assert len(result) > 0
+        assert output_file.exists()
+        assert output_file.read_text() == result
+
+    def test_preserves_comment_line(self):
+        mol = Chem.MolFromSmiles("C")
+        mol = Chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        conf = mol.GetConformer()
+        n = mol.GetNumAtoms()
+        lines = [str(n), "Energy: -40.12345678"]
+        for i in range(n):
+            pos = conf.GetAtomPosition(i)
+            sym = mol.GetAtomWithIdx(i).GetSymbol()
+            lines.append(f"{sym} {pos.x:.6f} {pos.y:.6f} {pos.z:.6f}")
+        xyz_str = "\n".join(lines) + "\n"
+
+        result = standardize_xyz(xyz_str)
+        result_lines = result.strip().split("\n")
+        assert result_lines[1] == "Energy: -40.12345678"
+
+    def test_deterministic(self):
+        mol = Chem.MolFromSmiles("ClCCO")
+        mol = Chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        xyz_str = _mol_to_xyz_str(mol)
+
+        r1 = standardize_xyz(xyz_str)
+        r2 = standardize_xyz(xyz_str)
+        assert r1 == r2
