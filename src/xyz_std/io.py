@@ -119,7 +119,11 @@ def write_multi_xyz(
                 f.write(f"{sym:>2s} {x:12.6f} {y:12.6f} {z:12.6f}\n")
 
 
-def standardize_xyz(xyz: str, output_path: str | None = None) -> str:
+def standardize_xyz(
+    xyz: str,
+    output_path: str | None = None,
+    comment: str | None = None,
+) -> str:
     """
     Standardize atom ordering in a single-frame XYZ.
 
@@ -133,6 +137,8 @@ def standardize_xyz(xyz: str, output_path: str | None = None) -> str:
     Args:
         xyz: XYZ content string (contains newlines) or file path
         output_path: If provided, write standardized XYZ to this file
+        comment: Custom comment line for the output XYZ. If None, preserve
+            the original comment line from the input.
 
     Returns:
         Standardized XYZ string
@@ -141,9 +147,10 @@ def standardize_xyz(xyz: str, output_path: str | None = None) -> str:
 
     xyz_str = _read_xyz_content(xyz)
 
-    # Preserve the original comment line
-    lines = xyz_str.strip().split('\n')
-    comment = lines[1] if len(lines) > 1 else ""
+    # Use custom comment or preserve the original
+    if comment is None:
+        lines = xyz_str.strip().split('\n')
+        comment = lines[1] if len(lines) > 1 else ""
 
     # Parse symbols/coords from the original text
     symbols, coords = xyz_to_symbols_coords(xyz_str)
