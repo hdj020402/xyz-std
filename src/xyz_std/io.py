@@ -2,6 +2,7 @@ import numpy as np
 from openbabel import pybel
 from rdkit import Chem
 from rdkit import RDLogger
+from rdkit.Chem import rdDetermineBonds
 
 RDLogger.DisableLog('rdApp.*')
 
@@ -14,36 +15,41 @@ def _read_xyz_content(xyz: str) -> str:
         return f.read()
 
 
-def xyz_to_rdkit_mol(xyz_str: str) -> Chem.Mol:
+def xyz_to_rdkit_mol(xyz_str: str, backend: str = "openbabel") -> Chem.Mol:
     """
     Convert XYZ string to RDKit Mol with 3D coordinates and bond connectivity.
 
-    Uses OpenBabel for bond perception from 3D geometry, then converts to RDKit Mol.
-    Tries full sanitization first; falls back to skip-valence sanitization for
-    molecules with unusual valence (e.g., hypervalent atoms).
-
     Args:
         xyz_str: XYZ format string (atom count, comment line, then coordinates)
+        backend: Bond perception method. "openbabel" uses OpenBabel with relaxed
+            sanitization; "rdkit" uses RDKit's rdDetermineBonds from 3D coordinates.
 
     Returns:
         RDKit Mol with explicit H atoms and a 3D conformer
     """
-    ob_mol = pybel.readstring("xyz", xyz_str)
-    molblock = ob_mol.write("mol")
+    if backend == "openbabel":
+        ob_mol = pybel.readstring("xyz", xyz_str)
+        molblock = ob_mol.write("mol")
 
-    mol = Chem.MolFromMolBlock(molblock, removeHs=False, sanitize=True)
-    if mol is not None:
+        mol = Chem.MolFromMolBlock(molblock, removeHs=False, sanitize=False)
+        if mol is None:
+            raise ValueError("RDKit failed to parse the MOL block from OpenBabel.")
+
+        Chem.SanitizeMol(
+            mol,
+            Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
+        )
         return mol
 
-    mol = Chem.MolFromMolBlock(molblock, removeHs=False, sanitize=False)
-    if mol is None:
-        raise ValueError("RDKit failed to parse the MOL block from OpenBabel.")
+    if backend == "rdkit":
+        mol = Chem.MolFromXYZBlock(xyz_str)
+        if mol is None:
+            raise ValueError("RDKit failed to parse the XYZ block.")
+        rdDetermineBonds.DetermineBonds(mol)
+        Chem.SanitizeMol(mol)
+        return mol
 
-    Chem.SanitizeMol(
-        mol,
-        Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
-    )
-    return mol
+    raise ValueError(f"Unknown backend: {backend!r}, expected 'openbabel' or 'rdkit'")
 
 
 def xyz_to_symbols_coords(xyz: str) -> tuple[list[str], np.ndarray]:
@@ -157,7 +163,11 @@ def standardize_xyz(
 
     # Create mol (with bonds and 3D) and compute standard order
     mol = xyz_to_rdkit_mol(xyz_str)
-    order = get_standard_atom_order(mol)
+    try:
+        order = get_standard_atom_order(mol)
+    except Chem.rdchem.AtomValenceException:
+        mol = xyz_to_rdkit_mol(xyz_str, backend="rdkit")
+        order = get_standard_atom_order(mol)
 
     # Reorder
     symbols_std = [symbols[i] for i in order]
