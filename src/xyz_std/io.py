@@ -1,10 +1,7 @@
 import numpy as np
 from openbabel import pybel
 from rdkit import Chem
-from rdkit import RDLogger
 from rdkit.Chem import rdDetermineBonds
-
-RDLogger.DisableLog('rdApp.*')
 
 
 def _read_xyz_content(xyz: str) -> str:

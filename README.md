@@ -104,6 +104,24 @@ h_order = order_h_on_heavy_atom(mol, center_idx=2, h_indices=[5, 6])
 # Returns [pro-R, pro-S] for prochiral, or geometric order for equivalent H
 ```
 
+### Log Level Control
+
+Control verbosity of RDKit and OpenBabel log output:
+
+```python
+from xyz_std import set_log_level, get_log_level
+
+# Available levels: 'none', 'error', 'warning', 'info', 'debug'
+set_log_level('none')     # Silence all logs
+set_log_level('error')    # Show only errors (default)
+set_log_level('warning')  # Show warnings and errors
+set_log_level('info')     # Show info, warnings, and errors
+set_log_level('debug')    # Show all log messages
+
+# Get current level
+level = get_log_level()  # Returns current level string
+```
+
 ## Testing
 
 ```bash
@@ -121,3 +139,5 @@ pytest
 | `xyz_to_symbols_coords(xyz)` | XYZ string/path -> (symbols, coordinates) |
 | `format_xyz(symbols, coords, comment)` | Symbols + coords -> XYZ format string |
 | `write_multi_xyz(symbols, coords, energies, path)` | Write multi-frame XYZ file |
+| `set_log_level(level)` | Set log level for RDKit and OpenBabel (`'none'`, `'error'`, `'warning'`, `'info'`, `'debug'`) |
+| `get_log_level()` | Get current log level |
