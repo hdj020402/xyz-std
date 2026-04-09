@@ -12,14 +12,6 @@ Given a molecule (as XYZ string, file path, or RDKit Mol), produces a canonical 
 
 ## Installation
 
-**Prerequisites**: Open Babel must be installed via conda:
-
-```bash
-conda install openbabel -c conda-forge
-```
-
-Then install this package:
-
 ```bash
 cd xyz-std
 pip install -e .            # core
