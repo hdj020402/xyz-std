@@ -69,6 +69,13 @@ def xyz_to_symbols_coords(xyz: str) -> tuple[list[str], np.ndarray]:
             continue
         symbols.append(parts[0])
         coords.append([float(x) for x in parts[1:4]])
+
+    if len(symbols) != n_atoms:
+        raise ValueError(
+            f"XYZ atom count mismatch: header declares {n_atoms} atoms, "
+            f"but {len(symbols)} coordinate lines were parsed"
+        )
+
     return symbols, np.array(coords)
 
 

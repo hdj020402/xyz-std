@@ -94,16 +94,6 @@ write_multi_xyz(
 )
 ```
 
-### H ordering on a specific atom
-
-```python
-from xyz_std import order_h_on_heavy_atom
-
-# Order H atoms on a specific heavy atom center
-h_order = order_h_on_heavy_atom(mol, center_idx=2, h_indices=[5, 6])
-# Returns [pro-R, pro-S] for prochiral, or geometric order for equivalent H
-```
-
 ### Log Level Control
 
 Control verbosity of RDKit and OpenBabel log output:
@@ -134,7 +124,6 @@ pytest
 |----------|-------------|
 | `standardize_xyz(xyz, output_path=None)` | One-step: XYZ string/path -> standardized XYZ string (+ optional file) |
 | `get_standard_atom_order(mol)` | Core: RDKit Mol -> canonical atom order `[heavy..., H...]` |
-| `order_h_on_heavy_atom(mol, center_idx, h_indices)` | 3D-aware H ordering on a single heavy atom |
 | `xyz_to_rdkit_mol(xyz_str)` | XYZ string -> RDKit Mol (via OpenBabel) |
 | `xyz_to_symbols_coords(xyz)` | XYZ string/path -> (symbols, coordinates) |
 | `format_xyz(symbols, coords, comment)` | Symbols + coords -> XYZ format string |

@@ -133,7 +133,7 @@ def _try_order_2h(
     return _try_order_2h_sp3(mol, center_idx, h1_idx, h2_idx)
 
 
-def order_h_on_heavy_atom(
+def _order_h_on_heavy_atom(
     mol: Chem.Mol,
     center_idx: int,
     h_indices: list[int]
@@ -147,8 +147,9 @@ def order_h_on_heavy_atom(
               fallback to geometric if CIP undetermined
       - 3+ H: geometric CCW angle projection
 
-    Requires mol to have a conformer with 3D coordinates and
-    AssignStereochemistry already called (for CIP ranks in sp2 case).
+    Requires mol to have a conformer with 3D coordinates and both
+    AssignAtomChiralTagsFromStructure and AssignStereochemistry already
+    called (for CIP ranks in sp2 case).
 
     Args:
         mol: RDKit Mol with explicit H and a 3D conformer

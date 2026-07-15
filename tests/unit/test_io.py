@@ -215,3 +215,18 @@ class TestStandardizeXyz:
         r1 = standardize_xyz(xyz_str)
         r2 = standardize_xyz(xyz_str)
         assert r1 == r2
+
+
+class TestXyzToSymbolsCoordsValidation:
+    def test_atom_count_mismatch_raises(self):
+        """Declared N > actual lines should raise ValueError."""
+        xyz_str = "5\ntest\nC  0.0 0.0 0.0\nH  1.0 0.0 0.0\n"
+        with pytest.raises(ValueError, match="atom count mismatch"):
+            xyz_to_symbols_coords(xyz_str)
+
+    def test_atom_count_match_ok(self):
+        """Normal case still works."""
+        xyz_str = "3\ntest\nC  0.0 0.0 0.0\nH  1.0 0.0 0.0\nH  0.0 1.0 0.0\n"
+        symbols, coords = xyz_to_symbols_coords(xyz_str)
+        assert len(symbols) == 3
+        assert coords.shape == (3, 3)

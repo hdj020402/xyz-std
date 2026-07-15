@@ -1,6 +1,6 @@
 from rdkit import Chem
 
-from xyz_std.h_ordering import order_h_on_heavy_atom
+from xyz_std.h_ordering import _order_h_on_heavy_atom
 
 
 def _parse_heavy_order_from_auxinfo(aux_info: str) -> list[int]:
@@ -40,6 +40,7 @@ def get_standard_atom_order(mol: Chem.Mol) -> list[int]:
         Full 0-based atom order: [heavy atoms in InChI order, then H in 3D-aware order]
     """
     # Assign stereochemistry for CIP ranks (needed by deuterium and dihedral methods)
+    Chem.AssignAtomChiralTagsFromStructure(mol)
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
 
     # Get InChI and AuxInfo via RDKit built-in (no external inchi-1 needed)
@@ -65,7 +66,7 @@ def get_standard_atom_order(mol: Chem.Mol) -> list[int]:
     for heavy_idx in heavy_order:
         hs_on_heavy = [h for h, parent in h_attached_to.items() if parent == heavy_idx]
         if len(hs_on_heavy) > 1:
-            ordered = order_h_on_heavy_atom(mol, heavy_idx, hs_on_heavy)
+            ordered = _order_h_on_heavy_atom(mol, heavy_idx, hs_on_heavy)
             hydrogen_order.extend(ordered)
         else:
             hydrogen_order.extend(hs_on_heavy)

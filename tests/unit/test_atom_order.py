@@ -7,10 +7,16 @@ from xyz_std.io import xyz_to_rdkit_mol
 
 
 def _make_mol_with_3d(smiles: str, seed: int = 42) -> Chem.Mol:
-    """Helper: SMILES -> Mol with explicit H and 3D conformer."""
+    """Helper: SMILES -> Mol with explicit H and 3D conformer.
+
+    Calls both AssignAtomChiralTagsFromStructure and AssignStereochemistry
+    to ensure _CIPRank is available for sp2 CIP-based H ordering.
+    """
     mol = Chem.MolFromSmiles(smiles)
     mol = Chem.AddHs(mol)
     AllChem.EmbedMolecule(mol, randomSeed=seed)
+    Chem.AssignAtomChiralTagsFromStructure(mol)
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
     return mol
 
 
@@ -99,3 +105,26 @@ class TestGetStandardAtomOrder:
         order = get_standard_atom_order(mol)
         # Just verify it completes and returns valid permutation
         assert sorted(order) == list(range(mol.GetNumAtoms()))
+
+    def test_sp2_terminal_alkene_full_order(self):
+        """Propene: full get_standard_atom_order should produce valid ordering
+        with heavy atoms first and all H atoms included."""
+        mol = _make_mol_with_3d("CC=C")
+        order = get_standard_atom_order(mol)
+
+        # Valid permutation
+        assert sorted(order) == list(range(mol.GetNumAtoms()))
+
+        # Heavy atoms first
+        n_heavy = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() != 1)
+        for idx in order[:n_heavy]:
+            assert mol.GetAtomWithIdx(idx).GetAtomicNum() != 1
+        for idx in order[n_heavy:]:
+            assert mol.GetAtomWithIdx(idx).GetAtomicNum() == 1
+
+    def test_sp2_terminal_alkene_deterministic(self):
+        """Propene: same mol should always produce same order."""
+        mol = _make_mol_with_3d("CC=C", seed=42)
+        order1 = get_standard_atom_order(mol)
+        order2 = get_standard_atom_order(mol)
+        assert order1 == order2
