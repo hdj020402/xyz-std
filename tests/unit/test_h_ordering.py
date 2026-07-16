@@ -8,6 +8,7 @@ from xyz_std.h_ordering import (
     _order_h_by_angle_projection,
     _try_order_2h_sp3,
     _try_order_2h_sp2,
+    _try_order_2h_allene,
     _try_order_2h,
 )
 from xyz_std.io import xyz_to_rdkit_mol
@@ -348,6 +349,123 @@ class TestTryOrder2hSp2:
                     assert len(r1) == 2
                     assert set(r1) == set(h_nbrs)
                     assert r1 == r2  # same regardless of input order
+                    return
+        pytest.fail("No terminal =CH2 found")
+
+
+class TestTryOrder2hAllene:
+    """Tests for allene =CH2 ordering via axial chirality (R_a/S_a)."""
+
+    def test_unsubstituted_returns_none(self):
+        """H2C=C=CH2: far-end H's are equivalent → return None."""
+        mol = _make_mol_from_xyz("C=C=C")
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    result = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    assert result is None, (
+                        "unsubstituted allene should return None"
+                    )
+                    return
+        pytest.fail("No terminal =CH2 found in allene")
+
+    def test_asymmetric_succeeds(self):
+        """H2C=C=C(F)Br: far-end F/Br differ → ordering should succeed."""
+        mol = _make_mol_from_xyz("C=C=C(F)Br")
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    result = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    assert result is not None, (
+                        "asymmetric allene should succeed"
+                    )
+                    assert len(result) == 2
+                    assert set(result) == {h1, h2}
+                    return
+        pytest.fail("No terminal =CH2 found")
+
+    def test_deterministic(self):
+        """Same allene should always produce same output."""
+        mol = _make_mol_from_xyz("C=C=C(F)Br", seed=42)
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    r1 = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    r2 = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    assert r1 == r2
+                    return
+        pytest.fail("No terminal =CH2 found")
+
+    def test_input_order_independent(self):
+        """Swapping h1/h2 input should swap the output."""
+        mol = _make_mol_from_xyz("C=C=C(F)Br")
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    r1 = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    r2 = _try_order_2h_sp2(mol, center, partner, h2, h1)
+                    assert r1 is not None
+                    assert r2 is not None
+                    assert set(r1) == set(r2)
+                    assert r1 == [h1, h2] or r2 == [h2, h1]
+                    return
+        pytest.fail("No terminal =CH2 found")
+
+    def test_via_order_h_on_heavy_atom(self):
+        """Full _order_h_on_heavy_atom on allene =CH2 should give
+        deterministic order via axial chirality path."""
+        mol = _make_mol_from_xyz("C=C=C(F)Br")
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    center = atom.GetIdx()
+                    r1 = _order_h_on_heavy_atom(mol, center, h_nbrs)
+                    r2 = _order_h_on_heavy_atom(mol, center, list(reversed(h_nbrs)))
+                    assert len(r1) == 2
+                    assert set(r1) == set(h_nbrs)
+                    assert r1 == r2
                     return
         pytest.fail("No terminal =CH2 found")
 

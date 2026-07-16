@@ -75,6 +75,100 @@ def _try_order_2h_sp3(
     return None
 
 
+def _walk_allene_far_end(
+    mol: Chem.Mol,
+    center_idx: int,
+    partner_idx: int
+) -> tuple[int, int] | None:
+    """Walk through sp carbons along the cumulene axis to the far terminal.
+
+    Returns (far_atom_idx, prev_idx) or None if the walk fails.
+    """
+    cursor_idx = partner_idx
+    prev_idx = center_idx
+    cursor_atom = mol.GetAtomWithIdx(cursor_idx)
+
+    while cursor_atom.GetHybridization() == Chem.HybridizationType.SP:
+        next_atoms = []
+        for bond in cursor_atom.GetBonds():
+            if bond.GetBondTypeAsDouble() == 2.0:
+                other = bond.GetOtherAtomIdx(cursor_idx)
+                if other != prev_idx:
+                    next_atoms.append(other)
+        if len(next_atoms) != 1:
+            return None
+        prev_idx = cursor_idx
+        cursor_idx = next_atoms[0]
+        cursor_atom = mol.GetAtomWithIdx(cursor_idx)
+
+    return (cursor_idx, prev_idx)
+
+
+def _try_order_2h_allene(
+    mol: Chem.Mol,
+    center_idx: int,
+    partner_idx: int,
+    h1_idx: int,
+    h2_idx: int
+) -> list[int] | None:
+    """Order 2 H on terminal =CH2 of allene/cumulene via axial chirality.
+
+    Projects H1, H2 and the far-end highest-CIP substituent onto a plane
+    perpendicular to the C=C=C axis, then computes signed angles to determine
+    pro-R_a / pro-S_a ordering (CW arc from a to c → R_a).
+
+    Returns [pro-R_a_idx, pro-S_a_idx] or None if H are equivalent.
+    """
+    far_info = _walk_allene_far_end(mol, center_idx, partner_idx)
+    if far_info is None:
+        return None
+    far_idx, prev_idx = far_info
+
+    far_subs = [
+        n for n in mol.GetAtomWithIdx(far_idx).GetNeighbors()
+        if n.GetIdx() != prev_idx
+    ]
+    if not far_subs:
+        return None
+
+    ranks = [n.GetPropsAsDict()['_CIPRank'] for n in far_subs]
+    if len(far_subs) > 1 and len(set(ranks)) == 1:
+        return None  # Equivalent substituents → H are equivalent
+
+    far_c = max(far_subs, key=lambda n: n.GetPropsAsDict()['_CIPRank'])
+
+    # Geometric projection onto plane perpendicular to C=C=C axis
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    partner_pos = np.array(conf.GetAtomPosition(partner_idx))
+    h1_pos = np.array(conf.GetAtomPosition(h1_idx))
+    h2_pos = np.array(conf.GetAtomPosition(h2_idx))
+    far_c_pos = np.array(conf.GetAtomPosition(far_c.GetIdx()))
+
+    axis = partner_pos - center_pos
+    axis_norm = np.linalg.norm(axis)
+    if axis_norm < 1e-10:
+        return None
+    axis = axis / axis_norm
+
+    def _project(vec):
+        return vec - np.dot(vec, axis) * axis
+
+    h1_proj = _project(h1_pos - center_pos)
+    h2_proj = _project(h2_pos - center_pos)
+    far_proj = _project(far_c_pos - center_pos)
+
+    # Signed angle from H1 to far-c; axis as normal for CW/CCW determination.
+    # CW (negative) → H1 as 'a' yields R_a; CCW (positive) → H1 as 'a' yields S_a.
+    cross1 = np.dot(axis, np.cross(h1_proj, far_proj))
+    angle1 = np.arctan2(cross1, np.dot(h1_proj, far_proj))
+
+    if angle1 < 0:
+        return [h1_idx, h2_idx]  # h1 is pro-R_a
+    else:
+        return [h2_idx, h1_idx]  # h2 is pro-R_a
+
+
 def _try_order_2h_sp2(
     mol: Chem.Mol,
     center_idx: int,
@@ -82,27 +176,34 @@ def _try_order_2h_sp2(
     h1_idx: int,
     h2_idx: int
 ) -> list[int] | None:
-    """
-    Order 2 H on sp2 =CH2 via CIP rank + dihedral angle.
+    """Order 2 H on sp2 =CH2 via CIP rank + dihedral angle.
+
     Uses the highest-CIP-ranked substituent on the partner atom as reference.
     |dihedral| < 90 deg means h1 is cis to ref (pro-Z).
+
+    For allenes (partner is SP), delegates to axial chirality ordering.
+
     Returns [pro-Z_idx, pro-E_idx] or None if H are equivalent.
     """
+    partner_atom = mol.GetAtomWithIdx(partner_idx)
+
+    # Allene/cumulene: partner is sp → axial chirality ordering
+    if partner_atom.GetHybridization() == Chem.HybridizationType.SP:
+        return _try_order_2h_allene(mol, center_idx, partner_idx, h1_idx, h2_idx)
+
+    # Normal sp2: partner's directly-bonded substituents
     partner_subs = [
-        n for n in mol.GetAtomWithIdx(partner_idx).GetNeighbors()
+        n for n in partner_atom.GetNeighbors()
         if n.GetIdx() != center_idx
     ]
     if not partner_subs:
         return None
 
-    def cip_rank(atom_idx: int) -> int:
-        return mol.GetAtomWithIdx(atom_idx).GetPropsAsDict().get('_CIPRank', -1)
-
-    ranks = [cip_rank(n.GetIdx()) for n in partner_subs]
+    ranks = [n.GetPropsAsDict()['_CIPRank'] for n in partner_subs]
     if len(partner_subs) > 1 and len(set(ranks)) == 1:
         return None  # All substituents equivalent -> H are truly equivalent
 
-    ref_idx = max(partner_subs, key=lambda n: cip_rank(n.GetIdx())).GetIdx()
+    ref_idx = max(partner_subs, key=lambda n: n.GetPropsAsDict()['_CIPRank']).GetIdx()
     conf = mol.GetConformer()
     dihedral = rdMolTransforms.GetDihedralDeg(conf, h1_idx, center_idx, partner_idx, ref_idx)
 

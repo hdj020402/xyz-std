@@ -28,14 +28,9 @@ def xyz_to_rdkit_mol(xyz_str: str, backend: str = "openbabel") -> Chem.Mol:
         ob_mol = pybel.readstring("xyz", xyz_str)
         molblock = ob_mol.write("mol")
 
-        mol = Chem.MolFromMolBlock(molblock, removeHs=False, sanitize=False)
+        mol = Chem.MolFromMolBlock(molblock, removeHs=False, sanitize=True)
         if mol is None:
             raise ValueError("RDKit failed to parse the MOL block from OpenBabel.")
-
-        Chem.SanitizeMol(
-            mol,
-            Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
-        )
         return mol
 
     if backend == "rdkit":
