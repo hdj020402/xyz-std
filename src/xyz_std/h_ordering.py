@@ -79,16 +79,21 @@ def _walk_allene_far_end(
     mol: Chem.Mol,
     center_idx: int,
     partner_idx: int
-) -> tuple[int, int] | None:
+) -> tuple[int, int, int] | None:
     """Walk through sp carbons along the cumulene axis to the far terminal.
 
-    Returns (far_atom_idx, prev_idx) or None if the walk fails.
+    Returns (far_atom_idx, prev_idx, sp_count) or None if the walk fails.
+    sp_count is the number of sp carbons traversed:
+      - odd  → axial chirality (terminal planes perpendicular, R_a/S_a)
+      - even → coplanar terminal planes (pro-Z/pro-E via dihedral)
     """
     cursor_idx = partner_idx
     prev_idx = center_idx
     cursor_atom = mol.GetAtomWithIdx(cursor_idx)
+    sp_count = 0
 
     while cursor_atom.GetHybridization() == Chem.HybridizationType.SP:
+        sp_count += 1
         next_atoms = []
         for bond in cursor_atom.GetBonds():
             if bond.GetBondTypeAsDouble() == 2.0:
@@ -101,7 +106,7 @@ def _walk_allene_far_end(
         cursor_idx = next_atoms[0]
         cursor_atom = mol.GetAtomWithIdx(cursor_idx)
 
-    return (cursor_idx, prev_idx)
+    return (cursor_idx, prev_idx, sp_count)
 
 
 def _try_order_2h_allene(
@@ -111,18 +116,25 @@ def _try_order_2h_allene(
     h1_idx: int,
     h2_idx: int
 ) -> list[int] | None:
-    """Order 2 H on terminal =CH2 of allene/cumulene via axial chirality.
+    """Order 2 H on terminal =CH2 of allene/cumulene.
 
-    Projects H1, H2 and the far-end highest-CIP substituent onto a plane
-    perpendicular to the C=C=C axis, then computes signed angles to determine
-    pro-R_a / pro-S_a ordering (CW arc from a to c → R_a).
+    Odd sp count (axial chirality, e.g. propadiene):
+      Projects H1, H2 and the far-end highest-CIP substituent onto a plane
+      perpendicular to the C=C=C axis, then computes signed angles.
+      CW arc from a to c → R_a, CCW → S_a.
+      Returns [pro-R_a_idx, pro-S_a_idx].
 
-    Returns [pro-R_a_idx, pro-S_a_idx] or None if H are equivalent.
+    Even sp count (coplanar, e.g. butatriene):
+      Uses the far-end highest-CIP substituent as dihedral reference.
+      |dihedral| < 90° → pro-Z.
+      Returns [pro-Z_idx, pro-E_idx].
+
+    Returns None if H are equivalent.
     """
     far_info = _walk_allene_far_end(mol, center_idx, partner_idx)
     if far_info is None:
         return None
-    far_idx, prev_idx = far_info
+    far_idx, prev_idx, sp_count = far_info
 
     far_subs = [
         n for n in mol.GetAtomWithIdx(far_idx).GetNeighbors()
@@ -137,7 +149,6 @@ def _try_order_2h_allene(
 
     far_c = max(far_subs, key=lambda n: n.GetPropsAsDict()['_CIPRank'])
 
-    # Geometric projection onto plane perpendicular to C=C=C axis
     conf = mol.GetConformer()
     center_pos = np.array(conf.GetAtomPosition(center_idx))
     partner_pos = np.array(conf.GetAtomPosition(partner_idx))
@@ -145,28 +156,38 @@ def _try_order_2h_allene(
     h2_pos = np.array(conf.GetAtomPosition(h2_idx))
     far_c_pos = np.array(conf.GetAtomPosition(far_c.GetIdx()))
 
-    axis = partner_pos - center_pos
-    axis_norm = np.linalg.norm(axis)
-    if axis_norm < 1e-10:
-        return None
-    axis = axis / axis_norm
+    if sp_count % 2 == 1:
+        # Odd: axial chirality (planes perpendicular)
+        axis = partner_pos - center_pos
+        axis_norm = np.linalg.norm(axis)
+        if axis_norm < 1e-10:
+            return None
+        axis = axis / axis_norm
 
-    def _project(vec):
-        return vec - np.dot(vec, axis) * axis
+        def _project(vec):
+            return vec - np.dot(vec, axis) * axis
 
-    h1_proj = _project(h1_pos - center_pos)
-    h2_proj = _project(h2_pos - center_pos)
-    far_proj = _project(far_c_pos - center_pos)
+        h1_proj = _project(h1_pos - center_pos)
+        far_proj = _project(far_c_pos - center_pos)
 
-    # Signed angle from H1 to far-c; axis as normal for CW/CCW determination.
-    # CW (negative) → H1 as 'a' yields R_a; CCW (positive) → H1 as 'a' yields S_a.
-    cross1 = np.dot(axis, np.cross(h1_proj, far_proj))
-    angle1 = np.arctan2(cross1, np.dot(h1_proj, far_proj))
+        # Signed angle from H1 to far-c
+        cross = np.dot(axis, np.cross(h1_proj, far_proj))
+        angle = np.arctan2(cross, np.dot(h1_proj, far_proj))
 
-    if angle1 < 0:
-        return [h1_idx, h2_idx]  # h1 is pro-R_a
+        # CW (negative) → R_a, CCW (positive) → S_a
+        if angle < 0:
+            return [h1_idx, h2_idx]  # h1 is pro-R_a
+        else:
+            return [h2_idx, h1_idx]  # h2 is pro-R_a
     else:
-        return [h2_idx, h1_idx]  # h2 is pro-R_a
+        # Even: coplanar (pro-Z / pro-E via dihedral)
+        dihedral = rdMolTransforms.GetDihedralDeg(
+            conf, h1_idx, center_idx, partner_idx, far_c.GetIdx()
+        )
+        if abs(dihedral) < 90:
+            return [h1_idx, h2_idx]  # h1 is pro-Z
+        else:
+            return [h2_idx, h1_idx]  # h2 is pro-Z
 
 
 def _try_order_2h_sp2(
