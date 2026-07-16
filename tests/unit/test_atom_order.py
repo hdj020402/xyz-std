@@ -10,7 +10,11 @@ def _make_mol_with_3d(smiles: str, seed: int = 42) -> Chem.Mol:
     """Helper: SMILES -> Mol with explicit H and 3D conformer.
 
     Calls both AssignAtomChiralTagsFromStructure and AssignStereochemistry
-    to ensure _CIPRank is available for sp2 CIP-based H ordering.
+    to ensure _CIPRank is available for sp2/sp3 CIP-based H ordering.
+
+    Note: _CIPRank is NOT available for allenes via this path (RDKit cannot
+    assign axial chirality when explicit H are present). Use _make_mol_from_xyz
+    for allene tests.
     """
     mol = Chem.MolFromSmiles(smiles)
     mol = Chem.AddHs(mol)
@@ -18,6 +22,35 @@ def _make_mol_with_3d(smiles: str, seed: int = 42) -> Chem.Mol:
     Chem.AssignAtomChiralTagsFromStructure(mol)
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
     return mol
+
+
+def _make_mol_from_xyz(smiles: str, seed: int = 42) -> Chem.Mol:
+    """Helper: SMILES -> XYZ -> xyz_to_rdkit_mol (matches production pipeline).
+
+    Generates 3D coordinates via RDKit embedding, serializes to XYZ, then
+    parses through the production xyz_to_rdkit_mol with OpenBabel backend.
+    This ensures _CIPRank is available for all molecule types including
+    allenes (axial chirality), because OpenBabel includes CIP information
+    in the MOL block.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    AllChem.EmbedMolecule(mol, randomSeed=seed)
+    conf = mol.GetConformer()
+    n = mol.GetNumAtoms()
+    lines = [str(n), "test"]
+    for i in range(n):
+        pos = conf.GetAtomPosition(i)
+        sym = mol.GetAtomWithIdx(i).GetSymbol()
+        lines.append(f"{sym} {pos.x:.6f} {pos.y:.6f} {pos.z:.6f}")
+    xyz_str = "\n".join(lines) + "\n"
+    mol_ob = xyz_to_rdkit_mol(xyz_str)
+    # OpenBabel provides _CIPRank for chiral molecules (allenes etc.) but not
+    # for simple alkenes. Call assign here to fill in the gaps — existing
+    # _CIPRank from OpenBabel is preserved, and missing ones are computed.
+    Chem.AssignAtomChiralTagsFromStructure(mol_ob)
+    Chem.AssignStereochemistry(mol_ob, cleanIt=True, force=True)
+    return mol_ob
 
 
 def _mol_to_xyz_str(mol: Chem.Mol) -> str:
@@ -125,6 +158,55 @@ class TestGetStandardAtomOrder:
     def test_sp2_terminal_alkene_deterministic(self):
         """Propene: same mol should always produce same order."""
         mol = _make_mol_with_3d("CC=C", seed=42)
+        order1 = get_standard_atom_order(mol)
+        order2 = get_standard_atom_order(mol)
+        assert order1 == order2
+
+
+class TestGetStandardAtomOrderOpenBabel:
+    """Integration tests via OpenBabel (production) backend.
+
+    These tests use _make_mol_from_xyz which goes through the XYZ -> OpenBabel
+    -> MOL block -> RDKit pipeline. Mirrors TestGetStandardAtomOrder but via
+    the production pathway, ensuring _CIPRank is available for allenes.
+    """
+
+    def test_heavy_atoms_first(self):
+        mol = _make_mol_from_xyz("CCO")
+        order = get_standard_atom_order(mol)
+        n_heavy = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() != 1)
+        for idx in order[:n_heavy]:
+            assert mol.GetAtomWithIdx(idx).GetAtomicNum() != 1
+        for idx in order[n_heavy:]:
+            assert mol.GetAtomWithIdx(idx).GetAtomicNum() == 1
+
+    def test_is_permutation(self):
+        mol = _make_mol_from_xyz("c1ccccc1")
+        order = get_standard_atom_order(mol)
+        assert sorted(order) == list(range(mol.GetNumAtoms()))
+
+    def test_deterministic(self):
+        mol = _make_mol_from_xyz("CCCC", seed=42)
+        order1 = get_standard_atom_order(mol)
+        order2 = get_standard_atom_order(mol)
+        assert order1 == order2
+
+    def test_sp2_terminal_alkene_full_order(self):
+        """Propene via OB: valid ordering with heavy atoms first."""
+        mol = _make_mol_from_xyz("CC=C")
+        order = get_standard_atom_order(mol)
+
+        assert sorted(order) == list(range(mol.GetNumAtoms()))
+
+        n_heavy = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() != 1)
+        for idx in order[:n_heavy]:
+            assert mol.GetAtomWithIdx(idx).GetAtomicNum() != 1
+        for idx in order[n_heavy:]:
+            assert mol.GetAtomWithIdx(idx).GetAtomicNum() == 1
+
+    def test_sp2_terminal_alkene_deterministic(self):
+        """Propene via OB: same mol should always produce same order."""
+        mol = _make_mol_from_xyz("CC=C", seed=42)
         order1 = get_standard_atom_order(mol)
         order2 = get_standard_atom_order(mol)
         assert order1 == order2
