@@ -470,6 +470,148 @@ class TestTryOrder2hAllene:
         pytest.fail("No terminal =CH2 found")
 
 
+def _make_cumulene_mol(smiles: str, seed: int = 42) -> Chem.Mol:
+    """Helper for even-cumulene (butatriene etc.) tests via RDKit direct path.
+
+    RDKit correctly perceives cumulene bond types but does not assign
+    _CIPRank for axial chirality. We manually set _CIPRank based on atomic
+    number to simulate what OpenBabel would provide. OB is not used here
+    because it misperceives butatriene bond orders as C-C≡C-C.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    AllChem.EmbedMolecule(mol, randomSeed=seed)
+    Chem.AssignAtomChiralTagsFromStructure(mol)
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+
+    for atom in mol.GetAtoms():
+        atom.SetDoubleProp("_CIPRank", float(atom.GetAtomicNum()))
+
+    return mol
+
+
+class TestTryOrder2hAlleneEven:
+    """Tests for even-cumulene (butatriene etc.) =CH2 ordering.
+
+    sp_count is even → terminal planes are coplanar → pro-Z/pro-E via
+    dihedral. Uses RDKit direct path with manual _CIPRank because
+    OpenBabel misperceives butatriene bond types.
+    """
+
+    def test_unsubstituted_returns_none(self):
+        """H2C=C=C=CH2: far-end H's are equivalent → return None."""
+        mol = _make_cumulene_mol("C=C=C=C")
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    result = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    assert result is None, (
+                        "unsubstituted butatriene should return None"
+                    )
+                    return
+        pytest.fail("No terminal =CH2 found in butatriene")
+
+    def test_asymmetric_succeeds(self):
+        """H2C=C=C=CHF: far-end F/H differ → ordering should succeed."""
+        mol = _make_cumulene_mol("C=C=C=CF")
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    result = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    assert result is not None, (
+                        "asymmetric butatriene should succeed"
+                    )
+                    assert len(result) == 2
+                    assert set(result) == {h1, h2}
+                    return
+        pytest.fail("No terminal =CH2 found in butatriene")
+
+    def test_deterministic(self):
+        """Same butatriene should always produce same output."""
+        mol = _make_cumulene_mol("C=C=C=CF", seed=42)
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    r1 = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    r2 = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    assert r1 == r2
+                    return
+        pytest.fail("No terminal =CH2 found in butatriene")
+
+    def test_input_order_independent(self):
+        """Swapping h1/h2 input should swap the output."""
+        mol = _make_cumulene_mol("C=C=C=CF")
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    r1 = _try_order_2h_sp2(mol, center, partner, h1, h2)
+                    r2 = _try_order_2h_sp2(mol, center, partner, h2, h1)
+                    assert r1 is not None
+                    assert r2 is not None
+                    assert set(r1) == set(r2)
+                    assert r1 == [h1, h2] or r2 == [h2, h1]
+                    return
+        pytest.fail("No terminal =CH2 found in butatriene")
+
+    def test_via_order_h_on_heavy_atom(self):
+        """Full _order_h_on_heavy_atom on butatriene =CH2 should give
+        deterministic order via even sp_count path."""
+        mol = _make_cumulene_mol("C=C=C=CF")
+
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    center = atom.GetIdx()
+                    r1 = _order_h_on_heavy_atom(mol, center, h_nbrs)
+                    r2 = _order_h_on_heavy_atom(mol, center, list(reversed(h_nbrs)))
+                    assert len(r1) == 2
+                    assert set(r1) == set(h_nbrs)
+                    assert r1 == r2
+                    return
+        pytest.fail("No terminal =CH2 found in butatriene")
+
+
 class TestTryOrder2hSp2OpenBabel:
     """Tests for sp2 =CH2 ordering via OpenBabel (production) backend.
 

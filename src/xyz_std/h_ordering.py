@@ -109,6 +109,18 @@ def _walk_allene_far_end(
     return (cursor_idx, prev_idx, sp_count)
 
 
+def _get_cip_rank(atom: Chem.Atom) -> int:
+    """Get _CIPRank from an atom, with a clear error if missing."""
+    props = atom.GetPropsAsDict()
+    if '_CIPRank' not in props:
+        raise RuntimeError(
+            f"Atom {atom.GetIdx()} ({atom.GetSymbol()}) missing _CIPRank property. "
+            f"Ensure Chem.AssignStereochemistry(mol, cleanIt=True, force=True) "
+            f"has been called before H ordering."
+        )
+    return int(props['_CIPRank'])
+
+
 def _try_order_2h_allene(
     mol: Chem.Mol,
     center_idx: int,
@@ -143,11 +155,11 @@ def _try_order_2h_allene(
     if not far_subs:
         return None
 
-    ranks = [n.GetPropsAsDict()['_CIPRank'] for n in far_subs]
+    ranks = [_get_cip_rank(n) for n in far_subs]
     if len(far_subs) > 1 and len(set(ranks)) == 1:
         return None  # Equivalent substituents → H are equivalent
 
-    far_c = max(far_subs, key=lambda n: n.GetPropsAsDict()['_CIPRank'])
+    far_c = max(far_subs, key=lambda n: _get_cip_rank(n))
 
     conf = mol.GetConformer()
     center_pos = np.array(conf.GetAtomPosition(center_idx))
