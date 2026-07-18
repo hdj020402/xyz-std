@@ -20,4 +20,5 @@ env/
 
 CLAUDE.md
 PYTHON_STYLE.md
-docs/
+*.ipynb
+docs/TODO.md

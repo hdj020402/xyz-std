@@ -51,6 +51,132 @@ def _order_h_by_angle_projection(
     return [h_idx for _, h_idx in angles]
 
 
+def _infer_lone_pair_position(
+    center_pos: np.ndarray,
+    bond_vecs: list[np.ndarray]
+) -> np.ndarray | None:
+    """Infer lone pair position for a pyramidal center.
+
+    For a tetrahedral center, the sum of all four bond vectors ≈ 0.
+    Given three explicit bond vectors, the lone pair direction is
+    approximately opposite to their sum.
+
+    Args:
+        center_pos: Position of the center atom
+        bond_vecs: List of vectors from center to each explicit neighbor
+
+    Returns:
+        Inferred lone pair position (at average bond length) or None if degenerate
+    """
+    s = np.zeros(3)
+    for v in bond_vecs:
+        s = s + v
+    lp_dir = -s
+    norm = np.linalg.norm(lp_dir)
+    if norm < 1e-10:
+        return None
+    avg_bond_len = np.mean([np.linalg.norm(v) for v in bond_vecs])
+    return center_pos + lp_dir / norm * avg_bond_len
+
+
+def _try_order_2h_signed_volume(
+    mol: Chem.Mol,
+    center_idx: int,
+    h1_idx: int,
+    h2_idx: int
+) -> list[int] | None:
+    """Order 2 H on a prochiral center via signed volume of tetrahedron.
+
+    Used as a fallback when RDKit cannot assign _CIPCode to the center
+    (e.g., P, S, As, and other non-carbon stereogenic centers).
+
+    For 4-coordinate centers, uses the four explicit substituents.
+    For 3-coordinate pyramidal centers (phosphines, sulfonium ions, etc.),
+    infers the lone pair position as the lowest-priority substituent.
+
+    CIP priority: non-H substituents (by _CIPRank) > D(h1) > H(h2)
+    [> lone_pair for 3-coordinate].
+
+    The signed volume sign determines R vs S for the deuterated center,
+    which maps directly to pro-R / pro-S for the original center.
+
+    Returns [pro-R_idx, pro-S_idx] or None if undetermined.
+    """
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    center_atom = mol.GetAtomWithIdx(center_idx)
+
+    neighbors = list(center_atom.GetNeighbors())
+    h_set = {h1_idx, h2_idx}
+    non_h = [n for n in neighbors if n.GetIdx() not in h_set]
+    n_explicit = len(neighbors)
+
+    if n_explicit not in (3, 4):
+        return None
+
+    # Check equivalence: if non-H substituents have the same CIP rank,
+    # the two H are truly equivalent → return None
+    if len(non_h) >= 2:
+        non_h_ranks = [
+            n.GetPropsAsDict().get('_CIPRank') for n in non_h
+        ]
+        if None not in non_h_ranks and len(set(non_h_ranks)) == 1:
+            return None
+
+    # Collect bond vectors from center to each neighbor
+    vecs: dict[int, np.ndarray] = {}
+    for n in neighbors:
+        vecs[n.GetIdx()] = np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+
+    # Build priority order: non-H (by _CIPRank desc) > h1(D) > h2(H)
+    non_h_sorted = sorted(
+        non_h,
+        key=lambda n: -int(n.GetPropsAsDict().get('_CIPRank', 0))
+    )
+    priority_atoms = non_h_sorted + [
+        mol.GetAtomWithIdx(h1_idx),
+        mol.GetAtomWithIdx(h2_idx),
+    ]
+
+    # Set up four vectors a>b>c>d in CIP priority order
+    if n_explicit == 4:
+        if len(non_h_sorted) != 2:
+            return None
+        a = vecs[priority_atoms[0].GetIdx()]
+        b = vecs[priority_atoms[1].GetIdx()]
+        c = vecs[priority_atoms[2].GetIdx()]  # h1 (D)
+        d = vecs[priority_atoms[3].GetIdx()]  # h2 (H)
+    else:  # n_explicit == 3
+        if len(non_h_sorted) != 1:
+            return None
+        a = vecs[priority_atoms[0].GetIdx()]  # non-H
+        b = vecs[priority_atoms[1].GetIdx()]  # h1 (D)
+        c = vecs[priority_atoms[2].GetIdx()]  # h2 (H)
+        lp_pos = _infer_lone_pair_position(
+            center_pos, [vecs[n.GetIdx()] for n in neighbors]
+        )
+        if lp_pos is None:
+            return None
+        d = lp_pos - center_pos  # lone pair (phantom, lowest priority)
+
+    # Signed volume: (a-d)·((b-d)×(c-d))
+    # Place lowest-priority substituent (d) conceptually behind the plane.
+    # Positive → a,b,c right-handed → CCW → S
+    # Negative → a,b,c left-handed  → CW  → R
+    a_rel = a - d
+    b_rel = b - d
+    c_rel = c - d
+    signed_vol = np.dot(a_rel, np.cross(b_rel, c_rel))
+
+    if abs(signed_vol) < 1e-10:
+        return None  # planar, cannot determine handedness
+
+    if signed_vol < 0:
+        return [h1_idx, h2_idx]  # R → h1 is pro-R
+    else:
+        return [h2_idx, h1_idx]  # S → h2 is pro-R
+
+
 def _try_order_2h_sp3(
     mol: Chem.Mol,
     center_idx: int,
@@ -60,7 +186,9 @@ def _try_order_2h_sp3(
     """
     Order 2 H on sp3 center via deuterium substitution + CIP assignment.
     Replaces h1 with D, then checks if center becomes R or S.
-    Returns [pro-R_idx, pro-S_idx] or None if CIP cannot determine.
+    Falls back to signed-volume method for non-carbon centers (P, S, etc.).
+
+    Returns [pro-R_idx, pro-S_idx] or None if undetermined.
     """
     mol_tmp = Chem.RWMol(Chem.Mol(mol))
     Chem.AssignAtomChiralTagsFromStructure(mol_tmp)
@@ -72,7 +200,10 @@ def _try_order_2h_sp3(
         return [h1_idx, h2_idx]  # h1 is pro-R
     elif cip == 'S':
         return [h2_idx, h1_idx]  # h2 is pro-R
-    return None
+
+    # RDKit cannot assign CIP (non-carbon centers: P, S, As, etc.)
+    # Fall back to manual signed-volume determination
+    return _try_order_2h_signed_volume(mol, center_idx, h1_idx, h2_idx)
 
 
 def _walk_allene_far_end(

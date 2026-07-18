@@ -10,6 +10,8 @@ from xyz_std.h_ordering import (
     _try_order_2h_sp2,
     _try_order_2h_allene,
     _try_order_2h,
+    _try_order_2h_signed_volume,
+    _infer_lone_pair_position,
 )
 from xyz_std.io import xyz_to_rdkit_mol
 
@@ -711,3 +713,227 @@ class TestTryOrder2hSp2OpenBabel:
                     assert r1 == r2
                     return
         pytest.fail("No terminal =CH2 found")
+
+
+class TestInferLonePairPosition:
+    """Tests for _infer_lone_pair_position."""
+
+    def test_tetrahedral_lone_pair(self):
+        """For a tetrahedral center with 3 explicit bonds, lone pair
+        should be opposite to the sum of bond vectors."""
+        center = np.array([0.0, 0.0, 0.0])
+        # Three bonds pointing roughly to alternating corners of a cube
+        vecs = [
+            np.array([1.0, 1.0, 1.0]),
+            np.array([1.0, -1.0, -1.0]),
+            np.array([-1.0, 1.0, -1.0]),
+        ]
+        lp = _infer_lone_pair_position(center, vecs)
+        assert lp is not None
+        # Lone pair should be in the opposite direction to sum of bonds
+        s = vecs[0] + vecs[1] + vecs[2]
+        lp_dir = lp - center
+        # lp_dir and -s should point in same direction (positive dot product)
+        assert np.dot(lp_dir, -s) > 0
+
+    def test_planar_returns_none(self):
+        """Planar (trigonal) arrangement should return None."""
+        center = np.array([0.0, 0.0, 0.0])
+        # Three coplanar bonds at 120° — sum ≈ 0
+        vecs = [
+            np.array([1.0, 0.0, 0.0]),
+            np.array([-0.5, 0.866, 0.0]),
+            np.array([-0.5, -0.866, 0.0]),
+        ]
+        lp = _infer_lone_pair_position(center, vecs)
+        assert lp is None
+
+
+class TestTryOrder2hSignedVolume:
+    """Tests for _try_order_2h_signed_volume (non-carbon prochiral centers)."""
+
+    def test_phosphine_prochiral(self):
+        """CH3-PH2: P with 3 neighbors (C, H, H) — signed volume should
+        infer lone pair and determine pro-R/pro-S."""
+        mol = _make_mol_with_3d("CP")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                if len(h_nbrs) == 2:
+                    h1, h2 = h_nbrs[0], h_nbrs[1]
+                    result = _try_order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    assert result is not None, (
+                        "Signed volume should determine pro-R/pro-S for PH2"
+                    )
+                    assert len(result) == 2
+                    assert set(result) == {h1, h2}
+                    return
+        pytest.fail("No P with 2H found in CH3-PH2")
+
+    def test_phosphine_deterministic(self):
+        """Same PH2 should always produce same output."""
+        mol = _make_mol_with_3d("CP")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                if len(h_nbrs) == 2:
+                    h1, h2 = h_nbrs[0], h_nbrs[1]
+                    r1 = _try_order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    r2 = _try_order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    assert r1 is not None
+                    assert r1 == r2
+                    return
+        pytest.fail("No P with 2H found")
+
+    def test_phosphine_input_order_independent(self):
+        """Swapping h1/h2 input should swap output."""
+        mol = _make_mol_with_3d("CP")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                if len(h_nbrs) == 2:
+                    h1, h2 = h_nbrs[0], h_nbrs[1]
+                    r1 = _try_order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    r2 = _try_order_2h_signed_volume(mol, atom.GetIdx(), h2, h1)
+                    assert r1 is not None and r2 is not None
+                    assert set(r1) == set(r2)
+                    assert r1 == [h1, h2] or r2 == [h2, h1]
+                    return
+        pytest.fail("No P with 2H found")
+
+    def test_via_try_order_2h_sp3(self):
+        """_try_order_2h_sp3 should fall back to signed volume for PH2."""
+        mol = _make_mol_with_3d("CP")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                if len(h_nbrs) == 2:
+                    h1, h2 = h_nbrs[0], h_nbrs[1]
+                    result = _try_order_2h_sp3(mol, atom.GetIdx(), h1, h2)
+                    assert result is not None, (
+                        "_try_order_2h_sp3 should fallback to signed volume for P"
+                    )
+                    assert len(result) == 2
+                    return
+        pytest.fail("No P with 2H found")
+
+    def test_via_order_h_on_heavy_atom(self):
+        """Full _order_h_on_heavy_atom on CH3-PH2 should use signed volume
+        fallback and produce deterministic output."""
+        mol = _make_mol_with_3d("CP")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                if len(h_nbrs) == 2:
+                    r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_nbrs)
+                    r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_nbrs)))
+                    assert len(r1) == 2
+                    assert set(r1) == set(h_nbrs)
+                    assert r1 == r2  # input order independent
+                    return
+        pytest.fail("No P with 2H found")
+
+    def test_equivalent_sih2_returns_none(self):
+        """Symmetric Si center (CH3-SiH2-CH3) should return None."""
+        mol = _make_mol_with_3d("C[SiH2]C")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 14:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                if len(h_nbrs) == 2:
+                    h1, h2 = h_nbrs[0], h_nbrs[1]
+                    result = _try_order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    assert result is None, "Symmetric SiH2 should return None"
+                    return
+        pytest.fail("No Si with 2H found")
+
+    def test_h2s_returns_none(self):
+        """H2S (2-coordinate, 2 lone pairs) should return None."""
+        mol = _make_mol_with_3d("[SH2]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 16:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                if len(h_nbrs) == 2:
+                    h1, h2 = h_nbrs[0], h_nbrs[1]
+                    result = _try_order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    assert result is None, "2-coordinate H2S should return None"
+                    return
+        pytest.fail("No S with 2H found")
+
+
+class TestHeavyAtomWithManyH:
+    """Tests for ≥3 H on P, S, Si, Ge (geometric CCW fallback path)."""
+
+    def test_phosphonium_4h(self):
+        """[PH4]+: 4 equivalent H → deterministic CCW order."""
+        mol = _make_mol_with_3d("[PH4+]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                assert len(h_nbrs) == 4
+                r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_nbrs)
+                r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_nbrs)))
+                assert len(r1) == 4
+                assert set(r1) == set(h_nbrs)
+                assert r1 == r2
+                return
+        pytest.fail("No P with 4H found")
+
+    def test_sulfonium_3h(self):
+        """[SH3]+: 3 equivalent H → deterministic CCW order."""
+        mol = _make_mol_with_3d("[SH3+]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 16:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                assert len(h_nbrs) == 3
+                r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_nbrs)
+                r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_nbrs)))
+                assert len(r1) == 3
+                assert set(r1) == set(h_nbrs)
+                assert r1 == r2
+                return
+        pytest.fail("No S with 3H found")
+
+    def test_silane_4h(self):
+        """SiH4: 4 equivalent H → deterministic CCW order."""
+        mol = _make_mol_with_3d("[SiH4]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 14:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                assert len(h_nbrs) == 4
+                r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_nbrs)
+                r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_nbrs)))
+                assert len(r1) == 4
+                assert set(r1) == set(h_nbrs)
+                assert r1 == r2
+                return
+        pytest.fail("No Si with 4H found")
+
+    def test_methyl_phosphonium_3h(self):
+        """CH3-PH3+: 3 H with one non-H neighbor → CCW order."""
+        mol = _make_mol_with_3d("C[PH3+]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                assert len(h_nbrs) == 3
+                r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_nbrs)
+                r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_nbrs)))
+                assert len(r1) == 3
+                assert set(r1) == set(h_nbrs)
+                assert r1 == r2
+                return
+        pytest.fail("No P with 3H found")
+
+    def test_ph5_5h(self):
+        """PH5: 5 H in trigonal bipyramidal → deterministic CCW order."""
+        mol = _make_mol_with_3d("[PH5]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                assert len(h_nbrs) == 5
+                r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_nbrs)
+                r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_nbrs)))
+                assert len(r1) == 5
+                assert set(r1) == set(h_nbrs)
+                assert r1 == r2
+                return
+        pytest.fail("No P with 5H found")
