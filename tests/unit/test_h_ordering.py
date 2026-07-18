@@ -15,7 +15,6 @@ from xyz_std.h_ordering import (
     _try_order_2h_sp3,
     _try_order_2h_sp2,
     _try_order_2h_allene,
-    _try_order_2h,
     _try_order_2h_signed_volume,
     _infer_lone_pair_position,
 )

@@ -377,30 +377,6 @@ def _try_order_2h_sp2(
         return [h2_idx, h1_idx]  # h2 is pro-Z
 
 
-def _try_order_2h(
-    mol: Chem.Mol,
-    center_idx: int,
-    h1_idx: int,
-    h2_idx: int
-) -> list[int] | None:
-    """Dispatch for 2 H on sp2 center: find double-bond partner and try sp2 order.
-
-    Tries double-bond-based ordering (Z/E or axial chirality via
-    _try_order_2h_sp2). Does NOT fall through to sp3 -- callers that want
-    sp3 pro-R/S should call _try_order_2h_sp3 directly.
-    """
-    center_atom = mol.GetAtomWithIdx(center_idx)
-
-    for bond in center_atom.GetBonds():
-        if bond.GetBondTypeAsDouble() == 2.0:
-            partner_idx = bond.GetOtherAtomIdx(center_idx)
-            result = _try_order_2h_sp2(mol, center_idx, partner_idx, h1_idx, h2_idx)
-            if result is not None:
-                return result
-
-    return None
-
-
 def _order_h_geometric(
     mol: Chem.Mol,
     center_idx: int,
@@ -454,9 +430,14 @@ def _order_h_sp2(
 ) -> list[int]:
     """Order H on an sp2 center: Z/E or allene axial chirality."""
     if len(h_indices) == 2:
-        result = _try_order_2h(mol, center_idx, h_indices[0], h_indices[1])
-        if result is not None:
-            return result
+        h1_idx, h2_idx = h_indices
+        center_atom = mol.GetAtomWithIdx(center_idx)
+        for bond in center_atom.GetBonds():
+            if bond.GetBondTypeAsDouble() == 2.0:
+                partner_idx = bond.GetOtherAtomIdx(center_idx)
+                result = _try_order_2h_sp2(mol, center_idx, partner_idx, h1_idx, h2_idx)
+                if result is not None:
+                    return result
     return _order_h_geometric(mol, center_idx, h_indices)
 
 
@@ -467,7 +448,8 @@ def _order_h_sp3(
 ) -> list[int]:
     """Order H on an sp3 center: CIP pro-R/S (deuterium -> signed volume)."""
     if len(h_indices) == 2:
-        result = _try_order_2h_sp3(mol, center_idx, h_indices[0], h_indices[1])
+        h1_idx, h2_idx = h_indices
+        result = _try_order_2h_sp3(mol, center_idx, h1_idx, h2_idx)
         if result is not None:
             return result
     return _order_h_geometric(mol, center_idx, h_indices)
