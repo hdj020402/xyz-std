@@ -6,6 +6,12 @@ from rdkit.Chem import AllChem
 from xyz_std.h_ordering import (
     _order_h_on_heavy_atom,
     _order_h_by_angle_projection,
+    _order_h_geometric,
+    _order_h_sp2,
+    _order_h_sp3,
+    _order_h_sp3d,
+    _order_h_sp3d2,
+    _classify_sp3d_positions,
     _try_order_2h_sp3,
     _try_order_2h_sp2,
     _try_order_2h_allene,
@@ -937,3 +943,188 @@ class TestHeavyAtomWithManyH:
                 assert r1 == r2
                 return
         pytest.fail("No P with 5H found")
+
+
+class TestClassifySp3dPositions:
+    """Tests for _classify_sp3d_positions (axial/equatorial classification)."""
+
+    def test_ph5_axial_equatorial_separation(self):
+        """PH5: 5 H should be classified as 2 axial + 3 equatorial."""
+        mol = _make_mol_with_3d("[PH5]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                assert atom.GetHybridization() == Chem.HybridizationType.SP3D
+                axial, eq_ = _classify_sp3d_positions(mol, atom.GetIdx())
+                assert len(axial) == 2, f"Expected 2 axial, got {len(axial)}"
+                assert len(eq_) == 3, f"Expected 3 equatorial, got {len(eq_)}"
+                return
+        pytest.fail("No P with 5H found")
+
+    def test_ph5_axial_angle_near_180(self):
+        """Axial pair should have bond angle near 180 degrees."""
+        mol = _make_mol_with_3d("[PH5]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                axial, _ = _classify_sp3d_positions(mol, atom.GetIdx())
+                conf = mol.GetConformer()
+                center = np.array(conf.GetAtomPosition(atom.GetIdx()))
+                v0 = np.array(conf.GetAtomPosition(axial[0])) - center
+                v1 = np.array(conf.GetAtomPosition(axial[1])) - center
+                angle = np.degrees(
+                    np.arccos(np.dot(v0, v1) / (np.linalg.norm(v0) * np.linalg.norm(v1)))
+                )
+                assert angle > 140, f"Axial angle {angle:.1f}° not near 180°"
+                return
+        pytest.fail("No P with 5H found")
+
+
+class TestOrderHSp3d:
+    """Tests for _order_h_sp3d (trigonal bipyramidal H ordering)."""
+
+    def test_ph5_axial_before_equatorial(self):
+        """PH5: axial H should come before equatorial H in output."""
+        mol = _make_mol_with_3d("[PH5]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                axial, eq_ = _classify_sp3d_positions(mol, atom.GetIdx())
+                h_axial_set = set(axial)
+                h_eq_set = set(eq_)
+                # All neighbors are H in PH5, so axial and eq are H indices
+                assert len(h_axial_set) == 2
+                assert len(h_eq_set) == 3
+
+                h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                result = _order_h_sp3d(mol, atom.GetIdx(), h_indices)
+
+                # All axial H should appear before all equatorial H
+                last_axial_pos = max(
+                    result.index(h) for h in result if h in h_axial_set
+                )
+                first_eq_pos = min(
+                    result.index(h) for h in result if h in h_eq_set
+                )
+                assert last_axial_pos < first_eq_pos, (
+                    f"Axial H should come before equatorial H, got {result}"
+                )
+                return
+        pytest.fail("No P with 5H found")
+
+    def test_ph5_deterministic(self):
+        """PH5: order should be deterministic regardless of input order."""
+        mol = _make_mol_with_3d("[PH5]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                r1 = _order_h_sp3d(mol, atom.GetIdx(), h_indices)
+                r2 = _order_h_sp3d(mol, atom.GetIdx(), list(reversed(h_indices)))
+                assert r1 == r2
+                return
+        pytest.fail("No P with 5H found")
+
+    def test_ph5_via_order_h_on_heavy_atom(self):
+        """PH5 through top-level dispatch: should use SP3D path."""
+        mol = _make_mol_with_3d("[PH5]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_indices)
+                r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_indices)))
+                assert len(r1) == 5
+                assert set(r1) == set(h_indices)
+                assert r1 == r2
+                return
+        pytest.fail("No P with 5H found")
+
+
+class TestOrderHSp3d2:
+    """Tests for _order_h_sp3d2 (octahedral H ordering)."""
+
+    def test_sh6_via_order_h_on_heavy_atom(self):
+        """SH6: SP3D2 routes to geometric CCW (all positions equivalent)."""
+        mol = _make_mol_with_3d("[SH6]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 16:
+                assert atom.GetHybridization() == Chem.HybridizationType.SP3D2
+                h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_indices)
+                r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_indices)))
+                assert len(r1) == 6
+                assert set(r1) == set(h_indices)
+                assert r1 == r2
+                return
+        pytest.fail("No S with 6H found")
+
+    def test_sh6_deterministic(self):
+        """SH6: geometric CCW should be deterministic."""
+        mol = _make_mol_with_3d("[SH6]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 16:
+                h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                r1 = _order_h_sp3d2(mol, atom.GetIdx(), h_indices)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_indices)))
+                assert r1 == r2
+                return
+        pytest.fail("No S with 6H found")
+
+
+class TestHybridizationDispatch:
+    """Verify dispatch routes to the correct function by hybridization."""
+
+    def test_sp3_centers_use_sp3_path(self):
+        """CH4, CH3-CH3: SP3 centers should use _order_h_sp3."""
+        for smi in ["C", "CC"]:
+            mol = _make_mol_with_3d(smi)
+            for atom in mol.GetAtoms():
+                if atom.GetAtomicNum() != 6:
+                    continue
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                if len(h_nbrs) < 2:
+                    continue
+                assert atom.GetHybridization() == Chem.HybridizationType.SP3
+                result = _order_h_sp3(mol, atom.GetIdx(), h_nbrs)
+                assert len(result) == len(h_nbrs)
+                assert set(result) == set(h_nbrs)
+
+    def test_sp2_centers_use_sp2_path(self):
+        """Propene =CH2: SP2 center should use _order_h_sp2."""
+        mol = _make_mol_with_3d("CC=C")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    assert atom.GetHybridization() == Chem.HybridizationType.SP2
+                    result = _order_h_sp2(mol, atom.GetIdx(), h_nbrs)
+                    assert len(result) == 2
+                    assert set(result) == set(h_nbrs)
+                    return
+        pytest.fail("No sp2 =CH2 found")
+
+    def test_top_level_dispatches_correctly(self):
+        """_order_h_on_heavy_atom should route SP2/SP3/SP3D correctly."""
+        # SP3: methane
+        mol = _make_mol_with_3d("C")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 6:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+                r = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_nbrs)
+                assert len(r) == 4
+                break
+
+        # SP2: propene
+        mol = _make_mol_with_3d("CC=C")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    r = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_nbrs)
+                    assert len(r) == 2
+                    return
+        pytest.fail("No sp2 =CH2 found")

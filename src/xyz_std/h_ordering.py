@@ -383,10 +383,14 @@ def _try_order_2h(
     h1_idx: int,
     h2_idx: int
 ) -> list[int] | None:
-    """Dispatch: try sp2 (=CH2) first, then sp3 (prochiral center)."""
+    """Dispatch for 2 H on sp2 center: find double-bond partner and try sp2 order.
+
+    Tries double-bond-based ordering (Z/E or axial chirality via
+    _try_order_2h_sp2). Does NOT fall through to sp3 -- callers that want
+    sp3 pro-R/S should call _try_order_2h_sp3 directly.
+    """
     center_atom = mol.GetAtomWithIdx(center_idx)
 
-    # Check for double bond -> sp2 =CH2
     for bond in center_atom.GetBonds():
         if bond.GetBondTypeAsDouble() == 2.0:
             partner_idx = bond.GetOtherAtomIdx(center_idx)
@@ -394,27 +398,18 @@ def _try_order_2h(
             if result is not None:
                 return result
 
-    # Try sp3 prochiral
-    return _try_order_2h_sp3(mol, center_idx, h1_idx, h2_idx)
+    return None
 
 
-def _order_h_on_heavy_atom(
+def _order_h_geometric(
     mol: Chem.Mol,
     center_idx: int,
     h_indices: list[int]
 ) -> list[int]:
-    """
-    Order H atoms on a heavy atom using 3D-aware methods.
+    """Order H atoms by geometric CCW angle projection.
 
-    Strategy:
-      - 0-1 H: return as-is
-      - 2 H: CIP-based (pro-R/pro-S for sp3, pro-Z/pro-E for sp2),
-              fallback to geometric if CIP undetermined
-      - 3+ H: geometric CCW angle projection
-
-    Requires mol to have a conformer with 3D coordinates and both
-    AssignAtomChiralTagsFromStructure and AssignStereochemistry already
-    called (for CIP ranks in sp2 case).
+    Picks a reference axis (strongest non-H neighbor, or min-index H if
+    none), then sorts all H by CCW angle around that axis.
 
     Args:
         mol: RDKit Mol with explicit H and a 3D conformer
@@ -427,22 +422,15 @@ def _order_h_on_heavy_atom(
     if len(h_indices) <= 1:
         return list(h_indices)
 
-    if len(h_indices) == 2:
-        result = _try_order_2h(mol, center_idx, h_indices[0], h_indices[1])
-        if result is not None:
-            return result
-
-    # Geometric fallback (3+ H or CIP could not determine)
     conf = mol.GetConformer()
     center_atom = mol.GetAtomWithIdx(center_idx)
     non_h_neighbors = [n for n in center_atom.GetNeighbors() if n.GetAtomicNum() != 1]
-
     center_pos = np.array(conf.GetAtomPosition(center_idx))
 
     if not non_h_neighbors:
-        # No non-H reference (e.g., CH4): pick one H as the reference axis,
-        # place it first, then order the rest by CCW projection around center->ref_H.
-        # This guarantees consistent handedness even without a heavy-atom reference.
+        # No non-H reference (e.g., CH4, PH5): pick one H as the
+        # reference axis, place it first, then order the rest by CCW
+        # projection around center->ref_H.
         ref_h = min(h_indices)
         remaining = [h for h in h_indices if h != ref_h]
         if not remaining:
@@ -457,3 +445,165 @@ def _order_h_on_heavy_atom(
     h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_indices]
 
     return _order_h_by_angle_projection(center_pos, ref_pos, h_pos_list)
+
+
+def _order_h_sp2(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int]
+) -> list[int]:
+    """Order H on an sp2 center: Z/E or allene axial chirality."""
+    if len(h_indices) == 2:
+        result = _try_order_2h(mol, center_idx, h_indices[0], h_indices[1])
+        if result is not None:
+            return result
+    return _order_h_geometric(mol, center_idx, h_indices)
+
+
+def _order_h_sp3(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int]
+) -> list[int]:
+    """Order H on an sp3 center: CIP pro-R/S (deuterium -> signed volume)."""
+    if len(h_indices) == 2:
+        result = _try_order_2h_sp3(mol, center_idx, h_indices[0], h_indices[1])
+        if result is not None:
+            return result
+    return _order_h_geometric(mol, center_idx, h_indices)
+
+
+def _classify_sp3d_positions(
+    mol: Chem.Mol,
+    center_idx: int
+) -> tuple[list[int], list[int]]:
+    """Classify neighbors of an SP3D center as axial or equatorial.
+
+    For trigonal bipyramidal (5-coordinate):
+    - The two neighbors forming the largest angle (~180°) are axial.
+    - The remaining three are equatorial.
+
+    Returns (axial_indices, equatorial_indices).
+    If classification fails (not 5 neighbors, or no clear axis),
+    returns all neighbors as equatorial.
+    """
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    all_nbrs = list(center_atom.GetNeighbors())
+
+    if len(all_nbrs) != 5:
+        return ([], [n.GetIdx() for n in all_nbrs])
+
+    vecs = {}
+    for n in all_nbrs:
+        vecs[n.GetIdx()] = np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+
+    nbr_indices = [n.GetIdx() for n in all_nbrs]
+
+    # Find the pair with the largest angle: these are the axial neighbors
+    max_angle = 0.0
+    axial_pair = (nbr_indices[0], nbr_indices[1])
+    for i in range(len(nbr_indices)):
+        for j in range(i + 1, len(nbr_indices)):
+            vi = vecs[nbr_indices[i]]
+            vj = vecs[nbr_indices[j]]
+            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
+            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
+            angle = np.arccos(cos_angle)
+            if angle > max_angle:
+                max_angle = angle
+                axial_pair = (nbr_indices[i], nbr_indices[j])
+
+    # Require the axial angle to be reasonably close to 180°
+    if max_angle < np.radians(140.0):
+        return ([], nbr_indices)
+
+    axial_indices = list(axial_pair)
+    equatorial_indices = [i for i in nbr_indices if i not in axial_indices]
+
+    return (axial_indices, equatorial_indices)
+
+
+def _order_h_sp3d(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int]
+) -> list[int]:
+    """Order H on an SP3D (trigonal bipyramidal) center.
+
+    Separates axial from equatorial H. Axial H are ordered before
+    equatorial H. Within each group, geometric CCW is used.
+    """
+    axial_nbrs, eq_nbrs = _classify_sp3d_positions(mol, center_idx)
+
+    axial_h = [h for h in h_indices if h in axial_nbrs]
+    eq_h = [h for h in h_indices if h in eq_nbrs]
+    other_h = [h for h in h_indices if h not in axial_nbrs and h not in eq_nbrs]
+
+    result = []
+    if axial_h:
+        result.extend(_order_h_geometric(mol, center_idx, axial_h))
+    if eq_h:
+        result.extend(_order_h_geometric(mol, center_idx, eq_h))
+    if other_h:
+        result.extend(_order_h_geometric(mol, center_idx, other_h))
+    return result
+
+
+def _order_h_sp3d2(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int]
+) -> list[int]:
+    """Order H on an SP3D2 (octahedral) center.
+
+    All six positions are equivalent in a regular octahedron.
+    Uses geometric CCW for deterministic ordering.
+    """
+    return _order_h_geometric(mol, center_idx, h_indices)
+
+
+def _order_h_on_heavy_atom(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int]
+) -> list[int]:
+    """Order H atoms on a heavy atom using 3D-aware methods.
+
+    Dispatches by RDKit hybridization:
+      - SP2: 2H via Z/E or allene axial chirality
+      - SP3: 2H via CIP pro-R/S (deuterium → signed volume fallback)
+      - SP3D: axial/equatorial separation + geometric CCW
+      - SP3D2: geometric CCW (all positions equivalent)
+      - Other: geometric CCW fallback
+
+    For >=3 H on any center type, falls through to geometric CCW.
+
+    Requires mol to have a conformer with 3D coordinates and both
+    AssignAtomChiralTagsFromStructure and AssignStereochemistry already
+    called.
+
+    Args:
+        mol: RDKit Mol with explicit H and a 3D conformer
+        center_idx: Index of the heavy atom center
+        h_indices: Indices of H atoms attached to center
+
+    Returns:
+        Deterministically ordered list of H atom indices
+    """
+    if len(h_indices) <= 1:
+        return list(h_indices)
+
+    hyb = mol.GetAtomWithIdx(center_idx).GetHybridization()
+
+    if hyb == Chem.HybridizationType.SP2:
+        return _order_h_sp2(mol, center_idx, h_indices)
+    elif hyb == Chem.HybridizationType.SP3:
+        return _order_h_sp3(mol, center_idx, h_indices)
+    elif hyb == Chem.HybridizationType.SP3D:
+        return _order_h_sp3d(mol, center_idx, h_indices)
+    elif hyb == Chem.HybridizationType.SP3D2:
+        return _order_h_sp3d2(mol, center_idx, h_indices)
+    else:
+        return _order_h_geometric(mol, center_idx, h_indices)
