@@ -1663,3 +1663,92 @@ class TestOrderHSp3d2All:
                 assert r == r2
                 return
         pytest.fail("No octahedral center found")
+
+
+class TestOrderHSp3d2Fac:
+    """Tests for 3H fac (3 H-X trans pairs)."""
+
+    def test_fac_abc(self):
+        """3 different trans partners → order by CIP descending."""
+        mol = _make_oct_mol("F", "H", "Cl", "H", "Br", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 3
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                assert len(r) == 3
+                assert set(r) == set(h_all)
+                return
+        pytest.fail("No fac ABC center found")
+
+    def test_fac_aab(self):
+        """2 same + 1 unique trans partner → unique H first,
+        remaining 2 H via 2H cis."""
+        mol = _make_oct_mol("F", "H", "F", "H", "Cl", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 3
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                assert len(r) == 3
+                assert set(r) == set(h_all)
+                return
+        pytest.fail("No fac AAB center found")
+
+    def test_fac_aaa(self):
+        """3 identical trans partners → all equivalent, geometric."""
+        mol = _make_oct_mol("F", "H", "F", "H", "F", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 3
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                assert len(r) == 3
+                assert set(r) == set(h_all)
+                return
+        pytest.fail("No fac AAA center found")
+
+
+class TestOrderHSp3d24hNonHCis:
+    """Tests for 4H with non-H cis (2 H-X + 1 H-H)."""
+
+    def test_hx_different_rank(self):
+        """F/Cl as trans partners → H-X H ordered by CIP."""
+        mol = _make_oct_mol("F", "H", "Cl", "H", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 4
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                assert len(r) == 4
+                assert set(r) == set(h_all)
+                return
+        pytest.fail("No octahedral center found")
+
+    def test_hx_same_rank(self):
+        """Both F as trans partners → H-X H equivalent → geometric."""
+        mol = _make_oct_mol("F", "H", "F", "H", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 4
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                assert len(r) == 4
+                assert set(r) == set(h_all)
+                return
+        pytest.fail("No octahedral center found")

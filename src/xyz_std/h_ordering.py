@@ -991,54 +991,121 @@ def _order_h_sp3d2(
             return result
         return _order_h_geometric(mol, center_idx, h_indices)
 
-    # --- 3H-6H: build trans-pair-based groups, then order ---
-    # Classify each H by its trans partner
-    h_trans = {}  # h_idx → trans_partner_idx
-    for a, b in trans_pairs:
-        if a in h_indices:
-            h_trans[a] = b
-        if b in h_indices:
-            h_trans[b] = a
+    # --- 3H-6H: classify trans pairs ---
+    h_set = set(h_indices)
 
-    # Build trans pairs that are pure H-H vs H-X
     hh_pairs = []  # trans pairs where both are H
-    hx_pairs = []  # trans pairs where one is H, one is non-H
+    hx_pairs = []  # trans pairs where one is H, one is non-H (H, non-H)
+    xx_pairs = []  # trans pairs where neither is H
     for a, b in trans_pairs:
-        a_is_h = a in h_indices
-        b_is_h = b in h_indices
+        a_is_h = a in h_set
+        b_is_h = b in h_set
         if a_is_h and b_is_h:
             hh_pairs.append((a, b))
         elif a_is_h:
             hx_pairs.append((a, b))
         elif b_is_h:
             hx_pairs.append((b, a))
-
-    result = []
-
-    # H-H trans pairs: these 2 H are trans → use trans ordering
-    for h_a, h_b in hh_pairs:
-        ordered = _order_sp3d2_trans_2h(
-            mol, center_idx, h_a, h_b, trans_pairs
-        )
-        if ordered is not None:
-            result.extend(ordered)
         else:
-            result.extend(_order_h_geometric(mol, center_idx, [h_a, h_b]))
+            xx_pairs.append((a, b))
 
-    # H-X trans pairs: single H → order by trans partner CIP rank
-    if hx_pairs:
-        # Sort by trans partner CIP rank (higher rank → H comes first)
-        hx_pairs.sort(
-            key=lambda p: -int(mol.GetAtomWithIdx(p[1]).GetPropsAsDict().get(
-                '_CIPRank', 0))
-        )
-        for h, _x in hx_pairs:
-            result.append(h)
+    result: list[int] = []
 
-    # Any H not yet in result (shouldn't happen in well-formed octahedron)
-    remaining = [h for h in h_indices if h not in result]
-    if remaining:
-        result.extend(_order_h_geometric(mol, center_idx, remaining))
+    # --- 3H ---
+    if n_h == 3:
+        if len(hx_pairs) == 3:
+            # fac: 3 H-X pairs
+            ranks = {}
+            for _h, x in hx_pairs:
+                r = int(mol.GetAtomWithIdx(x).GetPropsAsDict().get(
+                    '_CIPRank', 0))
+                ranks.setdefault(r, []).append(_h)
+
+            if len(ranks) == 3:
+                # ABC: all different → order by trans CIP descending
+                for r in sorted(ranks, reverse=True):
+                    result.append(ranks[r][0])
+            elif len(ranks) == 2:
+                # AAB: one unique H (trans=B) + two H (trans=A) → 2H cis
+                unique_rank = [r for r, hs in ranks.items()
+                               if len(hs) == 1][0]
+                dup_rank = [r for r, hs in ranks.items()
+                            if len(hs) == 2][0]
+                result.append(ranks[unique_rank][0])
+                cis_result = _order_sp3d2_cis_2h(
+                    mol, center_idx,
+                    ranks[dup_rank][0], ranks[dup_rank][1], trans_pairs
+                )
+                if cis_result is not None:
+                    result.extend(cis_result)
+                else:
+                    result.extend(_order_h_geometric(
+                        mol, center_idx, ranks[dup_rank]))
+            else:
+                # AAA: all equivalent
+                result = _order_h_geometric(mol, center_idx, h_indices)
+        else:
+            # mer: 1 H-H + 1 H-X
+            if hx_pairs:
+                result.append(hx_pairs[0][0])
+            for h_a, h_b in hh_pairs:
+                ordered = _order_sp3d2_trans_2h(
+                    mol, center_idx, h_a, h_b, trans_pairs
+                )
+                if ordered is not None:
+                    result.extend(ordered)
+                else:
+                    result.extend(_order_h_geometric(
+                        mol, center_idx, [h_a, h_b]))
+
+    # --- 4H ---
+    elif n_h == 4:
+        if len(hx_pairs) == 0:
+            # non-H trans: 2 H-H pairs, 4 H all equivalent
+            result = _order_h_geometric(mol, center_idx, h_indices)
+        else:
+            # non-H cis: 2 H-X + 1 H-H
+            # Order H-X H's by trans partner CIP
+            def _trans_rank(hx):
+                return int(mol.GetAtomWithIdx(hx[1]).GetPropsAsDict().get(
+                    '_CIPRank', 0))
+
+            ranks_hx = [_trans_rank(p) for p in hx_pairs]
+            if len(set(ranks_hx)) >= 2:
+                hx_pairs.sort(key=_trans_rank, reverse=True)
+                for h, _x in hx_pairs:
+                    result.append(h)
+            else:
+                # Equal rank → equivalent → geometric
+                result.extend(_order_h_geometric(
+                    mol, center_idx, [h for h, _x in hx_pairs]))
+            # H-H pair
+            for h_a, h_b in hh_pairs:
+                ordered = _order_sp3d2_trans_2h(
+                    mol, center_idx, h_a, h_b, trans_pairs
+                )
+                if ordered is not None:
+                    result.extend(ordered)
+                else:
+                    result.extend(_order_h_geometric(
+                        mol, center_idx, [h_a, h_b]))
+
+    # --- 5H ---
+    elif n_h == 5:
+        # 1 H-X + 2 H-H. H-X H first (unique), rest geometric.
+        if hx_pairs:
+            result.append(hx_pairs[0][0])
+        eq_h = [h for h in h_indices if h not in result]
+        result.extend(_order_h_geometric(mol, center_idx, eq_h))
+
+    # --- 6H ---
+    else:
+        # 3 H-H pairs. Pick one as ax, the rest as eq.
+        sorted_hh = sorted(hh_pairs, key=lambda p: min(p))
+        ax_a, ax_b = sorted_hh[0]
+        result.extend(_order_h_geometric(mol, center_idx, [ax_a, ax_b]))
+        eq_h = [h for h in h_indices if h not in result]
+        result.extend(_order_h_geometric(mol, center_idx, eq_h))
 
     return result
 
