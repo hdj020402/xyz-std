@@ -12,6 +12,8 @@ from xyz_std.h_ordering import (
     _order_h_sp3d,
     _order_h_sp3d2,
     _classify_sp3d_positions,
+    _order_sp3d_axial_2h,
+    _order_sp3d_equatorial_2h,
     _try_order_2h_sp3,
     _try_order_2h_sp2,
     _try_order_2h_allene,
@@ -1127,3 +1129,259 @@ class TestHybridizationDispatch:
                     assert len(r) == 2
                     return
         pytest.fail("No sp2 =CH2 found")
+
+
+def _make_sp3d_mol(ax1_sym, ax2_sym, eq1_sym, eq2_sym, eq3_sym):
+    """Helper: build an SP3D trigonal-bipyramidal molecule manually.
+
+    Constructs via RWMol with explicit bonds and 3D coordinates
+    (axial along z, equatorial in xy plane at 120°).
+    Assigns chiral tags and stereochemistry for _CIPRank availability.
+    Note: GetHybridization() may return UNSPECIFIED since RDKit does not
+    perceive SP3D from simple connectivity alone — use _order_h_sp3d
+    directly to test SP3D logic.
+    """
+    ax_bond = {"H": 1.42, "F": 1.55, "Cl": 2.1, "Br": 2.3}
+    eq_bond = {"H": 1.42, "F": 1.55, "Cl": 2.05, "Br": 2.2}
+
+    mol = Chem.RWMol()
+    p = Chem.Atom(15)
+    p_idx = mol.AddAtom(p)
+
+    ax1 = Chem.Atom(ax1_sym)
+    ax1_idx = mol.AddAtom(ax1)
+    mol.AddBond(p_idx, ax1_idx, Chem.BondType.SINGLE)
+
+    ax2 = Chem.Atom(ax2_sym)
+    ax2_idx = mol.AddAtom(ax2)
+    mol.AddBond(p_idx, ax2_idx, Chem.BondType.SINGLE)
+
+    eq_idxs = []
+    for i, sym in enumerate([eq1_sym, eq2_sym, eq3_sym]):
+        a = Chem.Atom(sym)
+        idx = mol.AddAtom(a)
+        eq_idxs.append(idx)
+        mol.AddBond(p_idx, idx, Chem.BondType.SINGLE)
+
+    mol.UpdatePropertyCache(strict=False)
+    mol = mol.GetMol()
+
+    conf = Chem.Conformer(6)
+    conf.SetAtomPosition(0, (0.0, 0.0, 0.0))
+    conf.SetAtomPosition(1, (0.0, 0.0, ax_bond.get(ax1_sym, 1.5)))
+    conf.SetAtomPosition(2, (0.0, 0.0, -ax_bond.get(ax2_sym, 1.5)))
+    for i, sym in enumerate([eq1_sym, eq2_sym, eq3_sym]):
+        angle = np.radians(120 * i)
+        b = eq_bond.get(sym, 1.5)
+        conf.SetAtomPosition(3 + i, (b * np.cos(angle), b * np.sin(angle), 0.0))
+    mol.AddConformer(conf)
+
+    Chem.AssignAtomChiralTagsFromStructure(mol)
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    return mol
+
+
+class TestOrderSp3dAxial2h:
+    """Tests for _order_sp3d_axial_2h (equatorial chirality method)."""
+
+    def test_prochiral_succeeds(self):
+        """PFBrClH2: 3 different eq substituents → axial H diastereotopic."""
+        mol = _make_sp3d_mol("H", "H", "Br", "Cl", "F")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
+                assert len(ax_h) == 2
+                result = _order_sp3d_axial_2h(
+                    mol, atom.GetIdx(), ax_h[0], ax_h[1], ax, eq
+                )
+                assert result is not None
+                assert len(result) == 2
+                assert set(result) == set(ax_h)
+                return
+        pytest.fail("No P with 2 axial H found")
+
+    def test_equivalent_returns_none(self):
+        """PH5: all eq H equivalent → axial H equivalent."""
+        mol = _make_sp3d_mol("H", "H", "H", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
+                result = _order_sp3d_axial_2h(
+                    mol, atom.GetIdx(), ax_h[0], ax_h[1], ax, eq
+                )
+                assert result is None
+                return
+        pytest.fail("No P found")
+
+    def test_deterministic(self):
+        """Same molecule → same result regardless of input order."""
+        mol = _make_sp3d_mol("H", "H", "Br", "Cl", "F")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
+                r1 = _order_sp3d_axial_2h(
+                    mol, atom.GetIdx(), ax_h[0], ax_h[1], ax, eq
+                )
+                r2 = _order_sp3d_axial_2h(
+                    mol, atom.GetIdx(), ax_h[1], ax_h[0], ax, eq
+                )
+                assert r1 is not None and r2 is not None
+                assert set(r1) == set(r2)
+                assert r1 == [ax_h[0], ax_h[1]] or r2 == [ax_h[1], ax_h[0]]
+                return
+        pytest.fail("No P found")
+
+    def test_via_order_h_sp3d(self):
+        """Integration via _order_h_sp3d: chemical method used for 2 ax H."""
+        mol = _make_sp3d_mol("H", "H", "Br", "Cl", "F")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
+                r = _order_h_sp3d(mol, atom.GetIdx(), ax_h)
+                assert len(r) == 2
+                assert set(r) == set(ax_h)
+                r2 = _order_h_sp3d(mol, atom.GetIdx(), list(reversed(ax_h)))
+                assert r == r2
+                return
+        pytest.fail("No P found")
+
+
+class TestOrderSp3dEquatorial2h:
+    """Tests for _order_sp3d_equatorial_2h (axial CIP + atan2 method)."""
+
+    def test_prochiral_succeeds(self):
+        """PFClBrH2: 2 different axial → eq H diastereotopic."""
+        mol = _make_sp3d_mol("F", "Cl", "Br", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                eq_h = [h for h in eq if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
+                assert len(eq_h) == 2
+                result = _order_sp3d_equatorial_2h(
+                    mol, atom.GetIdx(), eq_h[0], eq_h[1], ax, eq
+                )
+                assert result is not None
+                assert len(result) == 2
+                assert set(result) == set(eq_h)
+                return
+        pytest.fail("No P with 2 eq H found")
+
+    def test_equivalent_returns_none(self):
+        """PF2BrH2: 2 identical axial F → eq H equivalent."""
+        mol = _make_sp3d_mol("F", "F", "Br", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                eq_h = [h for h in eq if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
+                result = _order_sp3d_equatorial_2h(
+                    mol, atom.GetIdx(), eq_h[0], eq_h[1], ax, eq
+                )
+                assert result is None
+                return
+        pytest.fail("No P found")
+
+    def test_deterministic(self):
+        """Same molecule → same result regardless of input order."""
+        mol = _make_sp3d_mol("F", "Cl", "Br", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                eq_h = [h for h in eq if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
+                r1 = _order_sp3d_equatorial_2h(
+                    mol, atom.GetIdx(), eq_h[0], eq_h[1], ax, eq
+                )
+                r2 = _order_sp3d_equatorial_2h(
+                    mol, atom.GetIdx(), eq_h[1], eq_h[0], ax, eq
+                )
+                assert r1 is not None and r2 is not None
+                assert set(r1) == set(r2)
+                assert r1 == [eq_h[0], eq_h[1]] or r2 == [eq_h[1], eq_h[0]]
+                return
+        pytest.fail("No P found")
+
+    def test_via_order_h_sp3d(self):
+        """Integration via _order_h_sp3d."""
+        mol = _make_sp3d_mol("F", "Cl", "Br", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                eq_h = [h for h in eq if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
+                r = _order_h_sp3d(mol, atom.GetIdx(), eq_h)
+                assert len(r) == 2
+                assert set(r) == set(eq_h)
+                r2 = _order_h_sp3d(mol, atom.GetIdx(), list(reversed(eq_h)))
+                assert r == r2
+                return
+        pytest.fail("No P found")
+
+
+class TestOrderHSp3dDegenerate:
+    """SP3D degenerate cases: 3H, 4H distributions."""
+
+    def test_3h_2ax_1eq(self):
+        """2 ax H + 1 eq H + 2 non-H: ax uses chemical, eq 1H passthrough."""
+        mol = _make_sp3d_mol("H", "H", "Br", "Cl", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 3
+                r = _order_h_sp3d(mol, atom.GetIdx(), h_all)
+                assert len(r) == 3
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No P found")
+
+    def test_3h_1ax_2eq(self):
+        """1 ax H + 2 eq H: ax 1H passthrough, eq uses chemical."""
+        mol = _make_sp3d_mol("H", "F", "Br", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 3
+                r = _order_h_sp3d(mol, atom.GetIdx(), h_all)
+                assert len(r) == 3
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No P found")
+
+    def test_4h_2ax_2eq(self):
+        """2 ax H + 2 eq H: both groups use chemical methods."""
+        mol = _make_sp3d_mol("H", "H", "F", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 4
+                r = _order_h_sp3d(mol, atom.GetIdx(), h_all)
+                assert len(r) == 4
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No P found")
+
+    def test_4h_1ax_3eq(self):
+        """1 ax H + 3 eq H: ax passthrough, eq geometric (3H equivalent)."""
+        mol = _make_sp3d_mol("H", "F", "H", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 4
+                r = _order_h_sp3d(mol, atom.GetIdx(), h_all)
+                assert len(r) == 4
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No P found")

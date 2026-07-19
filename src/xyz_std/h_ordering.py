@@ -455,6 +455,150 @@ def _order_h_sp3(
     return _order_h_geometric(mol, center_idx, h_indices)
 
 
+def _order_sp3d_axial_2h(
+    mol: Chem.Mol,
+    center_idx: int,
+    h1_idx: int,
+    h2_idx: int,
+    axial_indices: list[int],
+    eq_indices: list[int]
+) -> list[int] | None:
+    """Order 2 axial H on SP3D via equatorial plane chirality.
+
+    The two axial H are on opposite ends of the trigonal-bipyramidal axis.
+    Whether they are equivalent depends on the three equatorial substituents:
+    if all three have distinct CIP ranks, the equatorial plane is chiral
+    and the two axial H are diastereotopic.
+
+    Defines z⁺ as the direction along the axis from which the equatorial
+    substituents (sorted by CIP rank descending) appear CCW.
+    The axial H at the z⁺ end comes first.
+
+    Returns [first_idx, second_idx] or None if H are equivalent.
+    """
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+
+    # Check equivalence: need 3 distinct CIP ranks among eq substituents
+    eq_ranks = []
+    for eq_idx in eq_indices:
+        props = mol.GetAtomWithIdx(eq_idx).GetPropsAsDict()
+        if '_CIPRank' not in props:
+            return None
+        eq_ranks.append(int(props['_CIPRank']))
+    if len(set(eq_ranks)) < len(eq_indices):
+        return None  # duplicate ranks → eq plane symmetric → H equivalent
+
+    # Sort eq by CIP rank descending
+    eq_sorted = sorted(eq_indices, key=lambda i: -int(
+        mol.GetAtomWithIdx(i).GetPropsAsDict()['_CIPRank']))
+    a_idx, b_idx, c_idx = eq_sorted[0], eq_sorted[1], eq_sorted[2]
+
+    # Axis direction: from h1 toward h2 (arbitrary initial choice)
+    h1_pos = np.array(conf.GetAtomPosition(h1_idx))
+    h2_pos = np.array(conf.GetAtomPosition(h2_idx))
+    axis = h2_pos - h1_pos
+    z_axis = axis / np.linalg.norm(axis)
+
+    # Build orthonormal basis on plane ⟂ z_axis
+    arbitrary = np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    x_axis = arbitrary - np.dot(arbitrary, z_axis) * z_axis
+    x_axis = x_axis / np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+
+    # Compute projected angles of eq substituents (CIP order: a→b→c)
+    def _proj_angle(atom_idx):
+        v = np.array(conf.GetAtomPosition(atom_idx)) - center_pos
+        v_proj = v - np.dot(v, z_axis) * z_axis
+        return np.arctan2(np.dot(v_proj, y_axis), np.dot(v_proj, x_axis))
+
+    ang_a = _proj_angle(a_idx) % (2 * np.pi)
+    ang_b = _proj_angle(b_idx) % (2 * np.pi)
+    ang_c = _proj_angle(c_idx) % (2 * np.pi)
+
+    # a→b→c is CCW if angles are in increasing cyclic order
+    ccw = ((ang_a < ang_b < ang_c)
+           or (ang_b < ang_c < ang_a)
+           or (ang_c < ang_a < ang_b))
+
+    # CCW when looking from h1 → h2 means h1 is at z⁺
+    if ccw:
+        return [h1_idx, h2_idx]
+    else:
+        return [h2_idx, h1_idx]
+
+
+def _order_sp3d_equatorial_2h(
+    mol: Chem.Mol,
+    center_idx: int,
+    h1_idx: int,
+    h2_idx: int,
+    axial_indices: list[int],
+    eq_indices: list[int]
+) -> list[int] | None:
+    """Order 2 equatorial H on SP3D via axial CIP direction + atan2.
+
+    The two equatorial H share the equatorial plane with one non-H
+    substituent. The axis direction is defined by the two axial
+    substituents: z⁺ points from the lower-CIP-rank axial to the
+    higher-CIP-rank axial.
+
+    On the plane ⟂ z⁺, the equatorial non-H substituent serves as
+    the angle reference (0°). H atoms are ordered by CCW atan2 angle.
+
+    Returns [first_idx, second_idx] or None if H are equivalent.
+    """
+    # Check equivalence: need distinct CIP ranks among axial substituents
+    ax_ranks = []
+    for ax_idx in axial_indices:
+        props = mol.GetAtomWithIdx(ax_idx).GetPropsAsDict()
+        if '_CIPRank' not in props:
+            return None
+        ax_ranks.append(int(props['_CIPRank']))
+    if len(set(ax_ranks)) < 2:
+        return None  # equal ranks → no defined z⁺ → H equivalent
+
+    # z⁺: high CIP rank → low CIP rank
+    ax_sorted = sorted(axial_indices, key=lambda i: -int(
+        mol.GetAtomWithIdx(i).GetPropsAsDict()['_CIPRank']))
+    ax_high, ax_low = ax_sorted[0], ax_sorted[1]
+
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+
+    # z_axis: ax_low → ax_high (z⁺ direction)
+    ax_high_pos = np.array(conf.GetAtomPosition(ax_high))
+    ax_low_pos = np.array(conf.GetAtomPosition(ax_low))
+    z_axis = ax_high_pos - ax_low_pos
+    z_axis = z_axis / np.linalg.norm(z_axis)
+
+    # Find the non-H equatorial reference
+    eq_non_h = [i for i in eq_indices if i not in (h1_idx, h2_idx)]
+    if len(eq_non_h) != 1:
+        return None
+    ref_idx = eq_non_h[0]
+
+    # Build orthonormal basis: x_axis toward eq reference
+    ref_vec = np.array(conf.GetAtomPosition(ref_idx)) - center_pos
+    x_vec = ref_vec - np.dot(ref_vec, z_axis) * z_axis
+    x_norm = np.linalg.norm(x_vec)
+    if x_norm < 1e-10:
+        return None
+    x_axis = x_vec / x_norm
+    y_axis = np.cross(z_axis, x_axis)
+
+    # Compute atan2 angles for H atoms
+    angles = []
+    for h_idx in (h1_idx, h2_idx):
+        v = np.array(conf.GetAtomPosition(h_idx)) - center_pos
+        v_proj = v - np.dot(v, z_axis) * z_axis
+        angle = np.arctan2(np.dot(v_proj, y_axis), np.dot(v_proj, x_axis))
+        angles.append((angle, h_idx))
+
+    angles.sort()
+    return [h_idx for _, h_idx in angles]
+
+
 def _classify_sp3d_positions(
     mol: Chem.Mol,
     center_idx: int
@@ -514,22 +658,44 @@ def _order_h_sp3d(
 ) -> list[int]:
     """Order H on an SP3D (trigonal bipyramidal) center.
 
-    Separates axial from equatorial H. Axial H are ordered before
-    equatorial H. Within each group, geometric CCW is used.
+    Separates axial from equatorial H. Within each group:
+      - 2H: chemical ordering (equatorial chirality for axial H,
+             axial CIP + atan2 for equatorial H), fallback to geometric
+      - other: geometric CCW
+
+    Axial H are ordered before equatorial H in the result.
     """
     axial_nbrs, eq_nbrs = _classify_sp3d_positions(mol, center_idx)
 
     axial_h = [h for h in h_indices if h in axial_nbrs]
     eq_h = [h for h in h_indices if h in eq_nbrs]
-    other_h = [h for h in h_indices if h not in axial_nbrs and h not in eq_nbrs]
 
     result = []
-    if axial_h:
+
+    # Order axial H group
+    if len(axial_h) == 2:
+        ordered = _order_sp3d_axial_2h(
+            mol, center_idx, axial_h[0], axial_h[1], axial_nbrs, eq_nbrs
+        )
+        if ordered is not None:
+            result.extend(ordered)
+        else:
+            result.extend(_order_h_geometric(mol, center_idx, axial_h))
+    elif axial_h:
         result.extend(_order_h_geometric(mol, center_idx, axial_h))
-    if eq_h:
+
+    # Order equatorial H group
+    if len(eq_h) == 2:
+        ordered = _order_sp3d_equatorial_2h(
+            mol, center_idx, eq_h[0], eq_h[1], axial_nbrs, eq_nbrs
+        )
+        if ordered is not None:
+            result.extend(ordered)
+        else:
+            result.extend(_order_h_geometric(mol, center_idx, eq_h))
+    elif eq_h:
         result.extend(_order_h_geometric(mol, center_idx, eq_h))
-    if other_h:
-        result.extend(_order_h_geometric(mol, center_idx, other_h))
+
     return result
 
 
