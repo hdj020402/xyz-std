@@ -699,6 +699,255 @@ def _order_h_sp3d(
     return result
 
 
+def _find_sp3d2_trans_pairs(
+    mol: Chem.Mol,
+    center_idx: int
+) -> list[tuple[int, int]]:
+    """Find the three trans (180°) pairs in an octahedral center.
+
+    Returns up to 3 (idx1, idx2) tuples, sorted by angle descending.
+    Only pairs with angle > 150° are included.
+    """
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    all_nbrs = list(center_atom.GetNeighbors())
+
+    vecs = {}
+    for n in all_nbrs:
+        vecs[n.GetIdx()] = np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+
+    pairs_with_angles = []
+    nbr_indices = [n.GetIdx() for n in all_nbrs]
+    for i in range(len(nbr_indices)):
+        for j in range(i + 1, len(nbr_indices)):
+            vi = vecs[nbr_indices[i]]
+            vj = vecs[nbr_indices[j]]
+            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
+            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
+            angle = np.arccos(cos_angle)
+            if angle > np.radians(150.0):
+                pairs_with_angles.append((angle, nbr_indices[i], nbr_indices[j]))
+
+    pairs_with_angles.sort(key=lambda x: -x[0])
+
+    used: set[int] = set()
+    trans_pairs: list[tuple[int, int]] = []
+    for _angle, i, j in pairs_with_angles:
+        if i not in used and j not in used:
+            trans_pairs.append((i, j))
+            used.add(i)
+            used.add(j)
+
+    return trans_pairs
+
+
+def _analyze_square_chirality(
+    mol: Chem.Mol,
+    center_idx: int,
+    z_from: int,
+    z_to: int,
+    square_indices: list[int]
+) -> bool | None:
+    """Analyze chirality of a 4-point square on the plane ⟂ the z axis.
+
+    z_from → z_to defines the axis direction. The four atoms in
+    square_indices lie approximately in the perpendicular plane.
+
+    Steps:
+      1. Reject if the 4 CIP ranks form 2 groups of 2 (e.g., A₂B₂).
+      2. Identify diagonal pairs (trans within the square).
+         Reject if any diagonal has matching CIP ranks.
+      3. Remove one atom (prefer duplicate rank, then lowest rank)
+         to obtain 3 atoms with distinct CIP ranks.
+      4. Triangle CW/CCW analysis on the 3 remaining atoms.
+
+    Returns True if CCW when looking along z_from→z_to, False if CW,
+    None if the square is symmetric (H equivalent).
+    """
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+
+    # Collect CIP ranks
+    sq_ranks = {}
+    for idx in square_indices:
+        props = mol.GetAtomWithIdx(idx).GetPropsAsDict()
+        if '_CIPRank' not in props:
+            return None
+        sq_ranks[idx] = int(props['_CIPRank'])
+
+    # --- Step 1: check for 2 groups of duplicates ---
+    from collections import Counter
+    rank_values = list(sq_ranks.values())
+    rank_counts = Counter(rank_values)
+    pairs_of_two = sum(1 for c in rank_counts.values() if c >= 2)
+    if pairs_of_two >= 2:
+        return None
+
+    # --- Step 2: check diagonals ---
+    # Find trans pairs among the 4 square atoms (these are the diagonals)
+    sq_vecs = {}
+    for idx in square_indices:
+        sq_vecs[idx] = np.array(conf.GetAtomPosition(idx)) - center_pos
+
+    diagonals = []
+    sq_list = list(square_indices)
+    for i in range(len(sq_list)):
+        for j in range(i + 1, len(sq_list)):
+            vi = sq_vecs[sq_list[i]]
+            vj = sq_vecs[sq_list[j]]
+            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
+            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
+            angle = np.arccos(cos_angle)
+            if angle > np.radians(150.0):
+                diagonals.append((sq_list[i], sq_list[j]))
+
+    for d1, d2 in diagonals:
+        if sq_ranks[d1] == sq_ranks[d2]:
+            return None
+
+    # --- Step 3: remove one atom to get 3 distinct ranks ---
+    sorted_sq = sorted(square_indices, key=lambda i: -sq_ranks[i])
+
+    kept = []
+    seen_ranks: set[int] = set()
+    for idx in sorted_sq:
+        r = sq_ranks[idx]
+        if r not in seen_ranks and len(kept) < 3:
+            kept.append(idx)
+            seen_ranks.add(r)
+        elif len(kept) >= 3:
+            break
+
+    if len(kept) < 3:
+        return None
+
+    # --- Step 4: triangle CW/CCW analysis ---
+    # Axis direction: z_from → z_to
+    h_from_pos = np.array(conf.GetAtomPosition(z_from))
+    h_to_pos = np.array(conf.GetAtomPosition(z_to))
+    z_axis = h_to_pos - h_from_pos
+    z_axis = z_axis / np.linalg.norm(z_axis)
+
+    # Gram-Schmidt basis on ⟂ plane
+    arbitrary = np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    x_axis = arbitrary - np.dot(arbitrary, z_axis) * z_axis
+    x_axis = x_axis / np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+
+    def _proj_angle(atom_idx):
+        v = np.array(conf.GetAtomPosition(atom_idx)) - center_pos
+        v_proj = v - np.dot(v, z_axis) * z_axis
+        return np.arctan2(np.dot(v_proj, y_axis), np.dot(v_proj, x_axis))
+
+    # kept[0], kept[1], kept[2] are in CIP descending order
+    ang0 = _proj_angle(kept[0]) % (2 * np.pi)
+    ang1 = _proj_angle(kept[1]) % (2 * np.pi)
+    ang2 = _proj_angle(kept[2]) % (2 * np.pi)
+
+    ccw = ((ang0 < ang1 < ang2)
+           or (ang1 < ang2 < ang0)
+           or (ang2 < ang0 < ang1))
+
+    return ccw
+
+
+def _order_sp3d2_trans_2h(
+    mol: Chem.Mol,
+    center_idx: int,
+    h1_idx: int,
+    h2_idx: int,
+    trans_pairs: list[tuple[int, int]]
+) -> list[int] | None:
+    """Order 2 trans H on an octahedral center via square chirality.
+
+    The 4 cis substituents form a square. Analyzes its chirality:
+    CW when looking from h1→h2 means h1 is at z⁺.
+    Returns [z⁺_idx, z⁻_idx] or None if equivalent.
+    """
+    # Find the 4 cis substituents (all neighbors except h1 and h2)
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    all_nbrs = {n.GetIdx() for n in center_atom.GetNeighbors()}
+    h_set = {h1_idx, h2_idx}
+    square_indices = list(all_nbrs - h_set)
+
+    if len(square_indices) != 4:
+        return None
+
+    ccw = _analyze_square_chirality(
+        mol, center_idx, h1_idx, h2_idx, square_indices
+    )
+
+    if ccw is None:
+        return None
+    elif ccw:
+        return [h1_idx, h2_idx]  # CCW: h1 at z⁺
+    else:
+        return [h2_idx, h1_idx]  # CW: h2 at z⁺
+
+
+def _order_sp3d2_cis_2h(
+    mol: Chem.Mol,
+    center_idx: int,
+    h1_idx: int,
+    h2_idx: int,
+    trans_pairs: list[tuple[int, int]]
+) -> list[int] | None:
+    """Order 2 cis H on an octahedral center.
+
+    Each H belongs to a different trans pair. Order by the CIP rank
+    of their trans partners. If the trans partners have equal CIP rank,
+    analyze each H's cis square chirality.
+    """
+    # Find trans partner for each H
+    t1 = None
+    t2 = None
+    for a, b in trans_pairs:
+        if a == h1_idx:
+            t1 = b
+        elif b == h1_idx:
+            t1 = a
+        if a == h2_idx:
+            t2 = b
+        elif b == h2_idx:
+            t2 = a
+
+    if t1 is None or t2 is None:
+        return None
+
+    r1 = int(mol.GetAtomWithIdx(t1).GetPropsAsDict().get('_CIPRank', 0))
+    r2 = int(mol.GetAtomWithIdx(t2).GetPropsAsDict().get('_CIPRank', 0))
+
+    if r1 != r2:
+        # Order by trans partner CIP rank (higher rank H first)
+        if r1 > r2:
+            return [h1_idx, h2_idx]
+        else:
+            return [h2_idx, h1_idx]
+
+    # T_a = T_b: use cis-square chirality
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    all_nbrs = {n.GetIdx() for n in center_atom.GetNeighbors()}
+
+    # H_a's cis square: all neighbors except H_a and T_a
+    cis1 = list(all_nbrs - {h1_idx, t1})
+    # H_b's cis square: all neighbors except H_b and T_b
+    cis2 = list(all_nbrs - {h2_idx, t2})
+
+    ccw1 = _analyze_square_chirality(mol, center_idx, t1, h1_idx, cis1)
+    ccw2 = _analyze_square_chirality(mol, center_idx, t2, h2_idx, cis2)
+
+    # The H whose cis square is CCW from T→H comes first
+    if ccw1 is not None and ccw2 is not None:
+        if ccw1 != ccw2:
+            if ccw1:  # h1's square CCW → h1 first
+                return [h1_idx, h2_idx]
+            else:
+                return [h2_idx, h1_idx]
+
+    return None
+
+
 def _order_h_sp3d2(
     mol: Chem.Mol,
     center_idx: int,
@@ -706,10 +955,92 @@ def _order_h_sp3d2(
 ) -> list[int]:
     """Order H on an SP3D2 (octahedral) center.
 
-    All six positions are equivalent in a regular octahedron.
-    Uses geometric CCW for deterministic ordering.
+    Dispatches by H count and trans relationship:
+      - 2H trans: square chirality (CW/CCW on 4 cis substituents)
+      - 2H cis:   trans partner CIP comparison → cis-square chirality
+      - 3H:       classify as fac or mer, delegate to trans/cis sub-problems
+      - 4H-5H:    classify non-H positions, delegate to sub-problems
+      - 6H:       pick a trans pair as reference, order ax then eq
+
+    All paths fall back to geometric CCW when substituents are equivalent.
     """
-    return _order_h_geometric(mol, center_idx, h_indices)
+    n_h = len(h_indices)
+    if n_h <= 1:
+        return list(h_indices)
+
+    trans_pairs = _find_sp3d2_trans_pairs(mol, center_idx)
+    if len(trans_pairs) != 3:
+        return _order_h_geometric(mol, center_idx, h_indices)
+
+    # --- 2H ---
+    if n_h == 2:
+        h1_idx, h2_idx = h_indices[0], h_indices[1]
+        # Check if trans
+        is_trans = any(
+            (h1_idx in pair and h2_idx in pair) for pair in trans_pairs
+        )
+        if is_trans:
+            result = _order_sp3d2_trans_2h(
+                mol, center_idx, h1_idx, h2_idx, trans_pairs
+            )
+        else:
+            result = _order_sp3d2_cis_2h(
+                mol, center_idx, h1_idx, h2_idx, trans_pairs
+            )
+        if result is not None:
+            return result
+        return _order_h_geometric(mol, center_idx, h_indices)
+
+    # --- 3H-6H: build trans-pair-based groups, then order ---
+    # Classify each H by its trans partner
+    h_trans = {}  # h_idx → trans_partner_idx
+    for a, b in trans_pairs:
+        if a in h_indices:
+            h_trans[a] = b
+        if b in h_indices:
+            h_trans[b] = a
+
+    # Build trans pairs that are pure H-H vs H-X
+    hh_pairs = []  # trans pairs where both are H
+    hx_pairs = []  # trans pairs where one is H, one is non-H
+    for a, b in trans_pairs:
+        a_is_h = a in h_indices
+        b_is_h = b in h_indices
+        if a_is_h and b_is_h:
+            hh_pairs.append((a, b))
+        elif a_is_h:
+            hx_pairs.append((a, b))
+        elif b_is_h:
+            hx_pairs.append((b, a))
+
+    result = []
+
+    # H-H trans pairs: these 2 H are trans → use trans ordering
+    for h_a, h_b in hh_pairs:
+        ordered = _order_sp3d2_trans_2h(
+            mol, center_idx, h_a, h_b, trans_pairs
+        )
+        if ordered is not None:
+            result.extend(ordered)
+        else:
+            result.extend(_order_h_geometric(mol, center_idx, [h_a, h_b]))
+
+    # H-X trans pairs: single H → order by trans partner CIP rank
+    if hx_pairs:
+        # Sort by trans partner CIP rank (higher rank → H comes first)
+        hx_pairs.sort(
+            key=lambda p: -int(mol.GetAtomWithIdx(p[1]).GetPropsAsDict().get(
+                '_CIPRank', 0))
+        )
+        for h, _x in hx_pairs:
+            result.append(h)
+
+    # Any H not yet in result (shouldn't happen in well-formed octahedron)
+    remaining = [h for h in h_indices if h not in result]
+    if remaining:
+        result.extend(_order_h_geometric(mol, center_idx, remaining))
+
+    return result
 
 
 def _order_h_on_heavy_atom(

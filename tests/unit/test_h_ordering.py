@@ -14,6 +14,10 @@ from xyz_std.h_ordering import (
     _classify_sp3d_positions,
     _order_sp3d_axial_2h,
     _order_sp3d_equatorial_2h,
+    _find_sp3d2_trans_pairs,
+    _analyze_square_chirality,
+    _order_sp3d2_trans_2h,
+    _order_sp3d2_cis_2h,
     _try_order_2h_sp3,
     _try_order_2h_sp2,
     _try_order_2h_allene,
@@ -1385,3 +1389,277 @@ class TestOrderHSp3dDegenerate:
                 assert r == r2
                 return
         pytest.fail("No P found")
+
+
+def _make_oct_mol(*vert_syms):
+    """Helper: build an octahedral (SP3D2) molecule manually.
+
+    Constructs via RWMol with explicit bonds and 3D coordinates.
+    The 6 vertices are along ±x, ±y, ±z axes. Assigns chiral tags
+    and stereochemistry for _CIPRank availability.
+
+    vert_syms is ordered: (+z, -z, +x, -x, +y, -y).
+    Note: GetHybridization() may return UNSPECIFIED since RDKit does
+    not perceive SP3D2 from simple connectivity alone — use
+    _order_h_sp3d2 directly to test octahedral logic.
+    """
+    bond_lens = {"H": 1.42, "F": 1.55, "Cl": 2.1, "Br": 2.3}
+    axes = [(0, 0, 1), (0, 0, -1), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)]
+
+    mol = Chem.RWMol()
+    p = Chem.Atom(15)
+    p_idx = mol.AddAtom(p)
+
+    for sym in vert_syms:
+        a = Chem.Atom(sym)
+        idx = mol.AddAtom(a)
+        mol.AddBond(p_idx, idx, Chem.BondType.SINGLE)
+
+    mol.UpdatePropertyCache(strict=False)
+    mol = mol.GetMol()
+
+    conf = Chem.Conformer(7)
+    conf.SetAtomPosition(0, (0.0, 0.0, 0.0))
+    for i, (sym, (dx, dy, dz)) in enumerate(zip(vert_syms, axes)):
+        b = bond_lens.get(sym, 1.5)
+        conf.SetAtomPosition(1 + i, (b * dx, b * dy, b * dz))
+    mol.AddConformer(conf)
+
+    Chem.AssignAtomChiralTagsFromStructure(mol)
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    return mol
+
+
+class TestFindSp3d2TransPairs:
+    """Tests for _find_sp3d2_trans_pairs."""
+
+    def test_sh6_three_pairs(self):
+        """Regular octahedron should have exactly 3 trans pairs."""
+        mol = _make_oct_mol("H", "H", "H", "H", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                assert len(pairs) == 3
+                all_atoms = set()
+                for a, b in pairs:
+                    all_atoms.add(a)
+                    all_atoms.add(b)
+                assert len(all_atoms) == 6
+                return
+        pytest.fail("No octahedral center found")
+
+
+class TestOrderSp3d2Trans2h:
+    """Tests for 2 trans H on octahedral center."""
+
+    def test_prochiral_succeeds(self):
+        """4 different cis substituents → trans H diastereotopic."""
+        mol = _make_oct_mol("H", "H", "Br", "Cl", "F", "I")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                h_trans = [(a, b) for a, b in trans_pairs
+                           if mol.GetAtomWithIdx(a).GetSymbol() == "H"
+                           and mol.GetAtomWithIdx(b).GetSymbol() == "H"]
+                if len(h_trans) == 1:
+                    h1, h2 = h_trans[0]
+                    result = _order_sp3d2_trans_2h(
+                        mol, atom.GetIdx(), h1, h2, trans_pairs
+                    )
+                    assert result is not None
+                    assert len(result) == 2
+                    assert set(result) == {h1, h2}
+                    return
+        pytest.fail("No trans H pair found")
+
+    def test_equivalent_returns_none(self):
+        """All cis substituents equivalent → trans H equivalent."""
+        mol = _make_oct_mol("H", "H", "H", "H", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                h_trans = [(a, b) for a, b in trans_pairs
+                           if mol.GetAtomWithIdx(a).GetSymbol() == "H"
+                           and mol.GetAtomWithIdx(b).GetSymbol() == "H"]
+                if h_trans:
+                    h1, h2 = h_trans[0]
+                    result = _order_sp3d2_trans_2h(
+                        mol, atom.GetIdx(), h1, h2, trans_pairs
+                    )
+                    assert result is None
+                    return
+        pytest.fail("No trans H pair found")
+
+    def test_deterministic(self):
+        """Input-order independence."""
+        mol = _make_oct_mol("H", "H", "Br", "Cl", "F", "I")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                h_trans = [(a, b) for a, b in trans_pairs
+                           if mol.GetAtomWithIdx(a).GetSymbol() == "H"
+                           and mol.GetAtomWithIdx(b).GetSymbol() == "H"]
+                if len(h_trans) == 1:
+                    h1, h2 = h_trans[0]
+                    r1 = _order_sp3d2_trans_2h(
+                        mol, atom.GetIdx(), h1, h2, trans_pairs
+                    )
+                    r2 = _order_sp3d2_trans_2h(
+                        mol, atom.GetIdx(), h2, h1, trans_pairs
+                    )
+                    assert r1 is not None and r2 is not None
+                    assert r1 == [h1, h2] or r2 == [h2, h1]
+                    return
+        pytest.fail("No trans H pair found")
+
+
+class TestOrderSp3d2Cis2h:
+    """Tests for 2 cis H on octahedral center."""
+
+    def test_trans_partner_cip_differs(self):
+        """2 cis H with different trans partners → order by trans CIP."""
+        mol = _make_oct_mol("F", "H", "Cl", "H", "Br", "I")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                if len(h_all) >= 2:
+                    for i in range(len(h_all)):
+                        for j in range(i + 1, len(h_all)):
+                            is_trans = any(
+                                (h_all[i] in p and h_all[j] in p)
+                                for p in trans_pairs
+                            )
+                            if not is_trans:
+                                result = _order_sp3d2_cis_2h(
+                                    mol, atom.GetIdx(),
+                                    h_all[i], h_all[j], trans_pairs
+                                )
+                                assert result is not None
+                                assert len(result) == 2
+                                assert set(result) == {h_all[i], h_all[j]}
+                                return
+        pytest.fail("No cis H pair found")
+
+    def test_equivalent_returns_none(self):
+        """2 cis H with equal trans partners AND symmetric cis square."""
+        mol = _make_oct_mol("F", "H", "F", "H", "F", "F")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                if len(h_all) >= 2:
+                    for i in range(len(h_all)):
+                        for j in range(i + 1, len(h_all)):
+                            is_trans = any(
+                                (h_all[i] in p and h_all[j] in p)
+                                for p in trans_pairs
+                            )
+                            if not is_trans:
+                                result = _order_sp3d2_cis_2h(
+                                    mol, atom.GetIdx(),
+                                    h_all[i], h_all[j], trans_pairs
+                                )
+                                assert result is None
+                                return
+        pytest.fail("No cis H pair found")
+
+
+class TestOrderHSp3d2All:
+    """Integration tests for _order_h_sp3d2 across H counts."""
+
+    def test_2h_trans_via_dispatch(self):
+        """2 trans H → chemical ordering via _order_h_sp3d2."""
+        mol = _make_oct_mol("H", "H", "Br", "Cl", "F", "I")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                assert len(r) == 2
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No octahedral center found")
+
+    def test_2h_cis_via_dispatch(self):
+        """2 cis H → chemical ordering via _order_h_sp3d2."""
+        mol = _make_oct_mol("F", "H", "Cl", "H", "Br", "I")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                assert len(r) == 2
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No octahedral center found")
+
+    def test_3h_via_dispatch(self):
+        """3 H on octahedral center → trans/cis dispatch."""
+        mol = _make_oct_mol("H", "H", "H", "F", "Cl", "Br")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 3
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                assert len(r) == 3
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No octahedral center found")
+
+    def test_4h_via_dispatch(self):
+        """4 H → 2 trans pairs or 1 trans + 2 singles."""
+        mol = _make_oct_mol("H", "H", "H", "H", "F", "Cl")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 4
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                assert len(r) == 4
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No octahedral center found")
+
+    def test_5h_via_dispatch(self):
+        """5 H → 2 trans pairs + 1 H-X."""
+        mol = _make_oct_mol("H", "H", "H", "H", "H", "F")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 5
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                assert len(r) == 5
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No octahedral center found")
+
+    def test_6h_via_dispatch(self):
+        """6 H → all equivalent, geometric CCW."""
+        mol = _make_oct_mol("H", "H", "H", "H", "H", "H")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                assert len(h_all) == 6
+                r = _order_h_sp3d2(mol, atom.GetIdx(), h_all)
+                assert len(r) == 6
+                assert set(r) == set(h_all)
+                r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_all)))
+                assert r == r2
+                return
+        pytest.fail("No octahedral center found")
