@@ -17,7 +17,7 @@ ref 的选择取决于场景：
 
 - sp3 有非 H 邻居（如 R-CH₃）：ref = 唯一的非 H 邻居
 - sp3 全 H（如 CH₄）：ref = min-idx 的 H（该 H 排第一，其余排序）
-- sp3d / sp3d2：ref = `_get_z_plus_ref` 确定的 z⁺ 端原子
+- sp3d / sp3d2：ref = `_get_z_plus_vec` 确定的 z⁺ 方向
 
 ---
 

@@ -23,6 +23,7 @@ from xyz_std.h_ordering import (
     _try_order_2h_allene,
     _try_order_2h_signed_volume,
     _infer_lone_pair_position,
+    _get_z_plus_vec,
 )
 from xyz_std.io import xyz_to_rdkit_mol
 
@@ -200,8 +201,8 @@ class TestTryOrder2hSp3:
                 return
         pytest.skip("No suitable prochiral center found")
 
-    def test_equivalent_h_returns_none(self):
-        """Truly equivalent H (symmetric center) should return None."""
+    def test_equivalent_h_returns_sorted(self):
+        """Truly equivalent H (symmetric center) should return sorted list."""
         # Propane central CH2: CH3-CH2-CH3, both sides are CH3 (equivalent)
         mol = _make_mol_with_3d("CCC")
         for atom in mol.GetAtoms():
@@ -210,10 +211,11 @@ class TestTryOrder2hSp3:
             h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
             c_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 6]
             if len(h_nbrs) == 2 and len(c_nbrs) == 2:
+                h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                 result = _try_order_2h_sp3(
-                    mol, atom.GetIdx(), h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    mol, atom.GetIdx(), h1, h2
                 )
-                assert result is None
+                assert result == sorted([h1, h2])
                 return
         pytest.skip("No symmetric CH2 found")
 
@@ -329,9 +331,9 @@ class TestTryOrder2hSp2:
                     return
         pytest.fail("No terminal =CH2 found")
 
-    def test_symmetric_partner_returns_none(self):
+    def test_symmetric_partner_returns_sorted(self):
         """Isobutene (CH3)2C=CH2: partner has 2 identical CH3 substituents,
-        sp2 CIP should return None (H are truly equivalent)."""
+        sp2 CIP should return sorted (H are truly equivalent)."""
         mol = _make_mol_with_3d("CC(C)=C")
 
         for atom in mol.GetAtoms():
@@ -346,8 +348,8 @@ class TestTryOrder2hSp2:
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     result = _try_order_2h_sp2(mol, center, partner, h1, h2)
-                    assert result is None, (
-                        "sp2 CIP should return None when partner subs are equivalent"
+                    assert result == sorted([h1, h2]), (
+                        "sp2 CIP should return sorted when partner subs are equivalent"
                     )
                     return
         pytest.fail("No terminal =CH2 found in isobutene")
@@ -378,8 +380,8 @@ class TestTryOrder2hSp2:
 class TestTryOrder2hAllene:
     """Tests for allene =CH2 ordering via axial chirality (R_a/S_a)."""
 
-    def test_unsubstituted_returns_none(self):
-        """H2C=C=CH2: far-end H's are equivalent → return None."""
+    def test_unsubstituted_returns_sorted(self):
+        """H2C=C=CH2: far-end H's are equivalent → return sorted."""
         mol = _make_mol_from_xyz("C=C=C")
 
         for atom in mol.GetAtoms():
@@ -394,8 +396,8 @@ class TestTryOrder2hAllene:
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     result = _try_order_2h_sp2(mol, center, partner, h1, h2)
-                    assert result is None, (
-                        "unsubstituted allene should return None"
+                    assert result == sorted([h1, h2]), (
+                        "unsubstituted allene should return sorted"
                     )
                     return
         pytest.fail("No terminal =CH2 found in allene")
@@ -520,8 +522,8 @@ class TestTryOrder2hAlleneEven:
     OpenBabel misperceives butatriene bond types.
     """
 
-    def test_unsubstituted_returns_none(self):
-        """H2C=C=C=CH2: far-end H's are equivalent → return None."""
+    def test_unsubstituted_returns_sorted(self):
+        """H2C=C=C=CH2: far-end H's are equivalent → return sorted."""
         mol = _make_cumulene_mol("C=C=C=C")
 
         for atom in mol.GetAtoms():
@@ -536,8 +538,8 @@ class TestTryOrder2hAlleneEven:
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     result = _try_order_2h_sp2(mol, center, partner, h1, h2)
-                    assert result is None, (
-                        "unsubstituted butatriene should return None"
+                    assert result == sorted([h1, h2]), (
+                        "unsubstituted butatriene should return sorted"
                     )
                     return
         pytest.fail("No terminal =CH2 found in butatriene")
@@ -689,9 +691,9 @@ class TestTryOrder2hSp2OpenBabel:
                     return
         pytest.fail("No terminal =CH2 found")
 
-    def test_symmetric_partner_returns_none(self):
+    def test_symmetric_partner_returns_sorted(self):
         """Isobutene via OB: partner has 2 identical CH3 substituents,
-        sp2 CIP should return None."""
+        sp2 CIP should return sorted."""
         mol = _make_mol_from_xyz("CC(C)=C")
 
         for atom in mol.GetAtoms():
@@ -706,8 +708,8 @@ class TestTryOrder2hSp2OpenBabel:
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     result = _try_order_2h_sp2(mol, center, partner, h1, h2)
-                    assert result is None, (
-                        "sp2 CIP should return None when partner subs are equivalent (OB)"
+                    assert result == sorted([h1, h2]), (
+                        "sp2 CIP should return sorted when partner subs are equivalent (OB)"
                     )
                     return
         pytest.fail("No terminal =CH2 found in isobutene")
@@ -853,8 +855,8 @@ class TestTryOrder2hSignedVolume:
                     return
         pytest.fail("No P with 2H found")
 
-    def test_equivalent_sih2_returns_none(self):
-        """Symmetric Si center (CH3-SiH2-CH3) should return None."""
+    def test_equivalent_sih2_returns_sorted(self):
+        """Symmetric Si center (CH3-SiH2-CH3) should return sorted."""
         mol = _make_mol_with_3d("C[SiH2]C")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 14:
@@ -862,12 +864,12 @@ class TestTryOrder2hSignedVolume:
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
                     result = _try_order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
-                    assert result is None, "Symmetric SiH2 should return None"
+                    assert result == sorted([h1, h2]), "Symmetric SiH2 should return sorted"
                     return
         pytest.fail("No Si with 2H found")
 
-    def test_h2s_returns_none(self):
-        """H2S (2-coordinate, 2 lone pairs) should return None."""
+    def test_h2s_returns_sorted(self):
+        """H2S (2-coordinate, 2 lone pairs) should return sorted."""
         mol = _make_mol_with_3d("[SH2]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 16:
@@ -875,7 +877,7 @@ class TestTryOrder2hSignedVolume:
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
                     result = _try_order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
-                    assert result is None, "2-coordinate H2S should return None"
+                    assert result == sorted([h1, h2]), "2-coordinate H2S should return sorted"
                     return
         pytest.fail("No S with 2H found")
 
@@ -1208,8 +1210,8 @@ class TestOrderSp3dAxial2h:
                 return
         pytest.fail("No P with 2 axial H found")
 
-    def test_equivalent_returns_none(self):
-        """All eq F equivalent → axial H equivalent."""
+    def test_equivalent_returns_sorted(self):
+        """All eq F equivalent → axial H equivalent → sorted."""
         mol = _make_sp3d_mol("H", "H", "F", "F", "F")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
@@ -1218,7 +1220,7 @@ class TestOrderSp3dAxial2h:
                 result = _order_sp3d_axial_2h(
                     mol, atom.GetIdx(), ax_h[0], ax_h[1], ax, eq
                 )
-                assert result is None
+                assert result == sorted(ax_h)
                 return
         pytest.fail("No P found")
 
@@ -1277,8 +1279,8 @@ class TestOrderSp3dEquatorial2h:
                 return
         pytest.fail("No P with 2 eq H found")
 
-    def test_equivalent_returns_none(self):
-        """PF2BrH2: 2 identical axial F → eq H equivalent."""
+    def test_equivalent_returns_sorted(self):
+        """PF2BrH2: 2 identical axial F → eq H equivalent → sorted."""
         mol = _make_sp3d_mol("F", "F", "Br", "H", "H")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
@@ -1287,7 +1289,7 @@ class TestOrderSp3dEquatorial2h:
                 result = _order_sp3d_equatorial_2h(
                     mol, atom.GetIdx(), eq_h[0], eq_h[1], ax, eq
                 )
-                assert result is None
+                assert result == sorted(eq_h)
                 return
         pytest.fail("No P found")
 
@@ -1475,8 +1477,8 @@ class TestOrderSp3d2Trans2h:
                     return
         pytest.fail("No trans H pair found")
 
-    def test_equivalent_returns_none(self):
-        """All cis F equivalent → trans H equivalent."""
+    def test_equivalent_returns_sorted(self):
+        """All cis F equivalent → trans H equivalent → sorted."""
         mol = _make_oct_mol("H", "H", "F", "F", "F", "F")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
@@ -1489,7 +1491,7 @@ class TestOrderSp3d2Trans2h:
                     result = _order_sp3d2_trans_2h(
                         mol, atom.GetIdx(), h1, h2, trans_pairs
                     )
-                    assert result is None
+                    assert result == sorted([h1, h2])
                     return
         pytest.fail("No trans H pair found")
 
@@ -1545,8 +1547,8 @@ class TestOrderSp3d2Cis2h:
                                 return
         pytest.fail("No cis H pair found")
 
-    def test_equivalent_returns_none(self):
-        """2 cis H with equal trans partners AND symmetric cis square."""
+    def test_equivalent_returns_sorted(self):
+        """2 cis H with equal trans partners AND symmetric cis square → sorted."""
         mol = _make_oct_mol("F", "H", "F", "H", "F", "F")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
@@ -1565,7 +1567,7 @@ class TestOrderSp3d2Cis2h:
                                     mol, atom.GetIdx(),
                                     h_all[i], h_all[j], trans_pairs
                                 )
-                                assert result is None
+                                assert result == sorted([h_all[i], h_all[j]])
                                 return
         pytest.fail("No cis H pair found")
 

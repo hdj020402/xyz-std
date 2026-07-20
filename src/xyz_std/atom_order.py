@@ -51,7 +51,7 @@ def get_standard_atom_order(mol: Chem.Mol) -> list[int]:
     heavy_order = _parse_heavy_order_from_auxinfo(aux_info)
 
     # Store canonical position on heavy atoms for downstream H-ordering
-    # (used by _get_z_plus_ref when CIP ranks of trans/axial pair are equal)
+    # (used by _get_z_plus_vec when CIP ranks of trans/axial pair are equal)
     for pos, idx in enumerate(heavy_order):
         mol.GetAtomWithIdx(idx).SetIntProp('_CanonicalOrder', pos)
 
