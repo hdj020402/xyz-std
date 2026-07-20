@@ -49,6 +49,12 @@ def get_standard_atom_order(mol: Chem.Mol) -> list[int]:
         raise RuntimeError("Failed to generate InChI/AuxInfo from mol")
 
     heavy_order = _parse_heavy_order_from_auxinfo(aux_info)
+
+    # Store canonical position on heavy atoms for downstream H-ordering
+    # (used by _get_z_plus_ref when CIP ranks of trans/axial pair are equal)
+    for pos, idx in enumerate(heavy_order):
+        mol.GetAtomWithIdx(idx).SetIntProp('_CanonicalOrder', pos)
+
     heavy_set = set(heavy_order)
 
     # Assign each H to its parent heavy atom via bond connectivity

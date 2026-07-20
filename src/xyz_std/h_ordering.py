@@ -377,50 +377,84 @@ def _try_order_2h_sp2(
         return [h2_idx, h1_idx]  # h2 is pro-Z
 
 
+def _get_z_plus_ref(
+    mol: Chem.Mol,
+    pair_indices: tuple[int, int]
+) -> int:
+    """Determine the atom at the z⁺ end of a trans/axial pair.
+
+    z⁺ direction: low → high CIP rank. If CIP ranks are equal, falls back
+    to _CanonicalOrder (InChI canonical position). If both atoms are H
+    (not in heavy_order), uses min original index.
+    """
+    p0 = mol.GetAtomWithIdx(pair_indices[0]).GetPropsAsDict()
+    p1 = mol.GetAtomWithIdx(pair_indices[1]).GetPropsAsDict()
+    r0 = int(p0.get('_CIPRank', 0))
+    r1 = int(p1.get('_CIPRank', 0))
+
+    if r0 != r1:
+        return pair_indices[0] if r0 > r1 else pair_indices[1]
+
+    # Same CIP rank: use canonical heavy-atom order
+    try:
+        pos0 = int(p0['_CanonicalOrder'])
+        pos1 = int(p1['_CanonicalOrder'])
+        return pair_indices[0] if pos0 > pos1 else pair_indices[1]
+    except KeyError:
+        # Both are H (not in heavy_order): min original index
+        return min(pair_indices)
+
+
 def _order_h_geometric(
     mol: Chem.Mol,
     center_idx: int,
-    h_indices: list[int]
+    h_indices: list[int],
+    ref_idx: int | None = None,
 ) -> list[int]:
     """Order H atoms by geometric CCW angle projection.
 
-    Picks a reference axis (strongest non-H neighbor, or min-index H if
-    none), then sorts all H by CCW angle around that axis.
+    Projects H atoms onto a plane perpendicular to a reference axis,
+    then sorts by CCW atan2 angle.
 
     Args:
         mol: RDKit Mol with explicit H and a 3D conformer
         center_idx: Index of the heavy atom center
-        h_indices: Indices of H atoms attached to center
+        h_indices: Indices of H atoms attached to center (length >= 2)
+        ref_idx: Optional explicit reference atom index for the z-axis.
+                 If None, auto-selects: non-H neighbor (sp3 Case B)
+                 or min-index H placed first (sp3 Case A, e.g. CH4).
 
     Returns:
         Deterministically ordered list of H atom indices
     """
-    if len(h_indices) <= 1:
-        return list(h_indices)
-
     conf = mol.GetConformer()
-    center_atom = mol.GetAtomWithIdx(center_idx)
-    non_h_neighbors = [n for n in center_atom.GetNeighbors() if n.GetAtomicNum() != 1]
     center_pos = np.array(conf.GetAtomPosition(center_idx))
 
-    if not non_h_neighbors:
-        # No non-H reference (e.g., CH4, PH5): pick one H as the
-        # reference axis, place it first, then order the rest by CCW
-        # projection around center->ref_H.
-        ref_h = min(h_indices)
-        remaining = [h for h in h_indices if h != ref_h]
-        if not remaining:
-            return [ref_h]
-        ref_pos = np.array(conf.GetAtomPosition(ref_h))
-        h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in remaining]
-        return [ref_h] + _order_h_by_angle_projection(center_pos, ref_pos, h_pos_list)
+    if ref_idx is not None:
+        # Explicit reference: project all H equally around the given axis
+        ref_pos = np.array(conf.GetAtomPosition(ref_idx))
+        h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_indices]
+        return _order_h_by_angle_projection(center_pos, ref_pos, h_pos_list)
 
-    # Pick reference: highest atomic number, then lowest index for stability
-    ref_neighbor = max(non_h_neighbors, key=lambda n: (n.GetAtomicNum(), -n.GetIdx()))
-    ref_pos = np.array(conf.GetAtomPosition(ref_neighbor.GetIdx()))
-    h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_indices]
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    non_h_neighbors = [n for n in center_atom.GetNeighbors() if n.GetAtomicNum() != 1]
 
-    return _order_h_by_angle_projection(center_pos, ref_pos, h_pos_list)
+    if non_h_neighbors:
+        # Case B (sp3, e.g. R-CH3): single non-H neighbor as ref,
+        # all H projected equally.
+        ref_pos = np.array(conf.GetAtomPosition(non_h_neighbors[0].GetIdx()))
+        h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_indices]
+        return _order_h_by_angle_projection(center_pos, ref_pos, h_pos_list)
+
+    # Case A (all H, e.g. CH4): pick min-index H as reference axis,
+    # place it first, then CCW-order the rest.
+    ref_h = min(h_indices)
+    remaining = [h for h in h_indices if h != ref_h]
+    if not remaining:
+        return [ref_h]
+    ref_pos = np.array(conf.GetAtomPosition(ref_h))
+    h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in remaining]
+    return [ref_h] + _order_h_by_angle_projection(center_pos, ref_pos, h_pos_list)
 
 
 def _order_h_sp2(
@@ -438,6 +472,8 @@ def _order_h_sp2(
                 result = _try_order_2h_sp2(mol, center_idx, partner_idx, h1_idx, h2_idx)
                 if result is not None:
                     return result
+        # 2H equivalent: sorted for determinism
+        return sorted(h_indices)
     return _order_h_geometric(mol, center_idx, h_indices)
 
 
@@ -452,6 +488,8 @@ def _order_h_sp3(
         result = _try_order_2h_sp3(mol, center_idx, h1_idx, h2_idx)
         if result is not None:
             return result
+        # 2H equivalent: sorted for determinism
+        return sorted(h_indices)
     return _order_h_geometric(mol, center_idx, h_indices)
 
 
@@ -659,18 +697,26 @@ def _order_h_sp3d(
     """Order H on an SP3D (trigonal bipyramidal) center.
 
     Separates axial from equatorial H. Within each group:
-      - 2H: chemical ordering (equatorial chirality for axial H,
-             axial CIP + atan2 for equatorial H), fallback to geometric
-      - other: geometric CCW
+      - ax 2H: equatorial chirality (pro-R/S), equivalent → direct
+      - eq 2H: axial CIP + atan2, equivalent → direct
+      - eq 3H: axial CIP/_CanonicalOrder z⁺ + CCW geometric
+      - eq 1H / ax 1H: direct
 
     Axial H are ordered before equatorial H in the result.
     """
+    if len(h_indices) <= 1:
+        return list(h_indices)
+
     axial_nbrs, eq_nbrs = _classify_sp3d_positions(mol, center_idx)
+
+    # Classification failure: fall back to geometric
+    if len(axial_nbrs) != 2:
+        return _order_h_geometric(mol, center_idx, h_indices)
 
     axial_h = [h for h in h_indices if h in axial_nbrs]
     eq_h = [h for h in h_indices if h in eq_nbrs]
 
-    result = []
+    result: list[int] = []
 
     # Order axial H group
     if len(axial_h) == 2:
@@ -680,9 +726,10 @@ def _order_h_sp3d(
         if ordered is not None:
             result.extend(ordered)
         else:
-            result.extend(_order_h_geometric(mol, center_idx, axial_h))
-    elif axial_h:
-        result.extend(_order_h_geometric(mol, center_idx, axial_h))
+            # 2H equivalent: sorted for determinism
+            result.extend(sorted(axial_h))
+    elif len(axial_h) == 1:
+        result.extend(axial_h)
 
     # Order equatorial H group
     if len(eq_h) == 2:
@@ -692,9 +739,14 @@ def _order_h_sp3d(
         if ordered is not None:
             result.extend(ordered)
         else:
-            result.extend(_order_h_geometric(mol, center_idx, eq_h))
-    elif eq_h:
-        result.extend(_order_h_geometric(mol, center_idx, eq_h))
+            # 2H equivalent: sorted for determinism
+            result.extend(sorted(eq_h))
+    elif len(eq_h) == 3:
+        # eq 3H: z⁺ from axial CIP/_CanonicalOrder, CCW geometric
+        ref = _get_z_plus_ref(mol, (axial_nbrs[0], axial_nbrs[1]))
+        result.extend(_order_h_geometric(mol, center_idx, eq_h, ref_idx=ref))
+    elif len(eq_h) == 1:
+        result.extend(eq_h)
 
     return result
 
@@ -962,7 +1014,9 @@ def _order_h_sp3d2(
       - 4H-5H:    classify non-H positions, delegate to sub-problems
       - 6H:       pick a trans pair as reference, order ax then eq
 
-    All paths fall back to geometric CCW when substituents are equivalent.
+    Equivalent 2H are returned directly (no geometric needed).
+    Geometric calls use explicit trans-pair z⁺ via _get_z_plus_ref when
+    CIP ranks are equal.
     """
     n_h = len(h_indices)
     if n_h <= 1:
@@ -975,7 +1029,6 @@ def _order_h_sp3d2(
     # --- 2H ---
     if n_h == 2:
         h1_idx, h2_idx = h_indices[0], h_indices[1]
-        # Check if trans
         is_trans = any(
             (h1_idx in pair and h2_idx in pair) for pair in trans_pairs
         )
@@ -989,14 +1042,15 @@ def _order_h_sp3d2(
             )
         if result is not None:
             return result
-        return _order_h_geometric(mol, center_idx, h_indices)
+        # 2H equivalent: sorted for determinism
+        return sorted(h_indices)
 
     # --- 3H-6H: classify trans pairs ---
     h_set = set(h_indices)
 
-    hh_pairs = []  # trans pairs where both are H
-    hx_pairs = []  # trans pairs where one is H, one is non-H (H, non-H)
-    xx_pairs = []  # trans pairs where neither is H
+    hh_pairs: list[tuple[int, int]] = []
+    hx_pairs: list[tuple[int, int]] = []  # (H, non-H)
+    xx_pairs: list[tuple[int, int]] = []
     for a, b in trans_pairs:
         a_is_h = a in h_set
         b_is_h = b in h_set
@@ -1015,7 +1069,7 @@ def _order_h_sp3d2(
     if n_h == 3:
         if len(hx_pairs) == 3:
             # fac: 3 H-X pairs
-            ranks = {}
+            ranks: dict[int, list[int]] = {}
             for _h, x in hx_pairs:
                 r = int(mol.GetAtomWithIdx(x).GetPropsAsDict().get(
                     '_CIPRank', 0))
@@ -1026,7 +1080,7 @@ def _order_h_sp3d2(
                 for r in sorted(ranks, reverse=True):
                     result.append(ranks[r][0])
             elif len(ranks) == 2:
-                # AAB: one unique H (trans=B) + two H (trans=A) → 2H cis
+                # AAB: unique H (trans=B) + 2H (trans=A) → 2H cis
                 unique_rank = [r for r, hs in ranks.items()
                                if len(hs) == 1][0]
                 dup_rank = [r for r, hs in ranks.items()
@@ -1039,11 +1093,27 @@ def _order_h_sp3d2(
                 if cis_result is not None:
                     result.extend(cis_result)
                 else:
-                    result.extend(_order_h_geometric(
-                        mol, center_idx, ranks[dup_rank]))
+                    # 2H equivalent: sorted for determinism
+                    result.extend(sorted(ranks[dup_rank]))
             else:
-                # AAA: all equivalent
-                result = _order_h_geometric(mol, center_idx, h_indices)
+                # AAA: all equivalent → min-idx H first, deuterate, cis-2H
+                h_sorted = sorted(h_indices)
+                first_h = h_sorted[0]
+                h2, h3 = h_sorted[1], h_sorted[2]
+                result.append(first_h)
+
+                mol_tmp = Chem.RWMol(Chem.Mol(mol))
+                Chem.AssignAtomChiralTagsFromStructure(mol_tmp)
+                mol_tmp.GetAtomWithIdx(first_h).SetIsotope(2)
+                Chem.AssignStereochemistry(mol_tmp, cleanIt=True, force=True)
+
+                cis_result = _order_sp3d2_cis_2h(
+                    mol_tmp, center_idx, h2, h3, trans_pairs
+                )
+                if cis_result is not None:
+                    result.extend(cis_result)
+                else:
+                    result.extend(sorted([h2, h3]))
         else:
             # mer: 1 H-H + 1 H-X
             if hx_pairs:
@@ -1055,17 +1125,18 @@ def _order_h_sp3d2(
                 if ordered is not None:
                     result.extend(ordered)
                 else:
-                    result.extend(_order_h_geometric(
-                        mol, center_idx, [h_a, h_b]))
+                    # 2H equivalent: sorted for determinism
+                    result.extend(sorted([h_a, h_b]))
 
     # --- 4H ---
     elif n_h == 4:
         if len(hx_pairs) == 0:
-            # non-H trans: 2 H-H pairs, 4 H all equivalent
-            result = _order_h_geometric(mol, center_idx, h_indices)
+            # non-H trans: 2 H-H pairs + 1 non-H trans pair
+            # Use trans non-H pair for z⁺ direction
+            ref = _get_z_plus_ref(mol, xx_pairs[0])
+            result = _order_h_geometric(mol, center_idx, h_indices, ref_idx=ref)
         else:
             # non-H cis: 2 H-X + 1 H-H
-            # Order H-X H's by trans partner CIP
             def _trans_rank(hx):
                 return int(mol.GetAtomWithIdx(hx[1]).GetPropsAsDict().get(
                     '_CIPRank', 0))
@@ -1076,9 +1147,8 @@ def _order_h_sp3d2(
                 for h, _x in hx_pairs:
                     result.append(h)
             else:
-                # Equal rank → equivalent → geometric
-                result.extend(_order_h_geometric(
-                    mol, center_idx, [h for h, _x in hx_pairs]))
+                # Equal rank → 2H equivalent: sorted for determinism
+                result.extend(sorted(h for h, _ in hx_pairs))
             # H-H pair
             for h_a, h_b in hh_pairs:
                 ordered = _order_sp3d2_trans_2h(
@@ -1087,25 +1157,30 @@ def _order_h_sp3d2(
                 if ordered is not None:
                     result.extend(ordered)
                 else:
-                    result.extend(_order_h_geometric(
-                        mol, center_idx, [h_a, h_b]))
+                    # 2H equivalent: sorted for determinism
+                    result.extend(sorted([h_a, h_b]))
 
     # --- 5H ---
     elif n_h == 5:
-        # 1 H-X + 2 H-H. H-X H first (unique), rest geometric.
+        # 1 H-X + 2 H-H. H-X H first (unique trans partner).
         if hx_pairs:
-            result.append(hx_pairs[0][0])
-        eq_h = [h for h in h_indices if h not in result]
-        result.extend(_order_h_geometric(mol, center_idx, eq_h))
+            h_first, x = hx_pairs[0]
+            result.append(h_first)
+            eq_h = [h for h in h_indices if h != h_first]
+            # Use trans H-X pair for z⁺ (x is at z⁺ end)
+            result.extend(_order_h_geometric(mol, center_idx, eq_h, ref_idx=x))
 
     # --- 6H ---
     else:
-        # 3 H-H pairs. Pick one as ax, the rest as eq.
+        # 3 H-H pairs. Pick one trans pair as ax (min-idx).
         sorted_hh = sorted(hh_pairs, key=lambda p: min(p))
         ax_a, ax_b = sorted_hh[0]
-        result.extend(_order_h_geometric(mol, center_idx, [ax_a, ax_b]))
+        # ax 2H equivalent: min idx first
+        result.extend([min(ax_a, ax_b), max(ax_a, ax_b)])
         eq_h = [h for h in h_indices if h not in result]
-        result.extend(_order_h_geometric(mol, center_idx, eq_h))
+        # Use ax trans pair for z⁺ direction
+        ref = _get_z_plus_ref(mol, (ax_a, ax_b))
+        result.extend(_order_h_geometric(mol, center_idx, eq_h, ref_idx=ref))
 
     return result
 
@@ -1118,13 +1193,14 @@ def _order_h_on_heavy_atom(
     """Order H atoms on a heavy atom using 3D-aware methods.
 
     Dispatches by RDKit hybridization:
-      - SP2: 2H via Z/E or allene axial chirality
-      - SP3: 2H via CIP pro-R/S (deuterium → signed volume fallback)
-      - SP3D: axial/equatorial separation + geometric CCW
-      - SP3D2: geometric CCW (all positions equivalent)
+      - SP2: 2H via Z/E or allene axial chirality; equivalent → direct
+      - SP3: 2H via CIP pro-R/S (deuterium → signed volume); equivalent → direct
+      - SP3D: axial/equatorial separation; eq 3H via axial z⁺ + CCW
+      - SP3D2: trans/cis analysis with deuteration for fac AAA
       - Other: geometric CCW fallback
 
-    For >=3 H on any center type, falls through to geometric CCW.
+    1 H is returned directly; 2H-equivalent cases skip geometric as they
+    produce no prochiral pair after a single substitution.
 
     Requires mol to have a conformer with 3D coordinates and both
     AssignAtomChiralTagsFromStructure and AssignStereochemistry already
