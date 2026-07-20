@@ -117,10 +117,8 @@ def _try_order_2h_signed_volume(
     # Check equivalence: if non-H substituents have the same CIP rank,
     # the two H are truly equivalent → return None
     if len(non_h) >= 2:
-        non_h_ranks = [
-            n.GetPropsAsDict().get('_CIPRank') for n in non_h
-        ]
-        if None not in non_h_ranks and len(set(non_h_ranks)) == 1:
+        non_h_ranks = [_get_cip_rank(n) for n in non_h]
+        if len(set(non_h_ranks)) == 1:
             return None
 
     # Collect bond vectors from center to each neighbor
@@ -129,10 +127,7 @@ def _try_order_2h_signed_volume(
         vecs[n.GetIdx()] = np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
 
     # Build priority order: non-H (by _CIPRank desc) > h1(D) > h2(H)
-    non_h_sorted = sorted(
-        non_h,
-        key=lambda n: -int(n.GetPropsAsDict().get('_CIPRank', 0))
-    )
+    non_h_sorted = sorted(non_h, key=lambda n: -_get_cip_rank(n))
     priority_atoms = non_h_sorted + [
         mol.GetAtomWithIdx(h1_idx),
         mol.GetAtomWithIdx(h2_idx),
@@ -363,11 +358,11 @@ def _try_order_2h_sp2(
     if not partner_subs:
         return None
 
-    ranks = [n.GetPropsAsDict()['_CIPRank'] for n in partner_subs]
+    ranks = [_get_cip_rank(n) for n in partner_subs]
     if len(partner_subs) > 1 and len(set(ranks)) == 1:
         return None  # All substituents equivalent -> H are truly equivalent
 
-    ref_idx = max(partner_subs, key=lambda n: n.GetPropsAsDict()['_CIPRank']).GetIdx()
+    ref_idx = max(partner_subs, key=lambda n: _get_cip_rank(n)).GetIdx()
     conf = mol.GetConformer()
     dihedral = rdMolTransforms.GetDihedralDeg(conf, h1_idx, center_idx, partner_idx, ref_idx)
 
@@ -387,18 +382,16 @@ def _get_z_plus_ref(
     to _CanonicalOrder (InChI canonical position). If both atoms are H
     (not in heavy_order), uses min original index.
     """
-    p0 = mol.GetAtomWithIdx(pair_indices[0]).GetPropsAsDict()
-    p1 = mol.GetAtomWithIdx(pair_indices[1]).GetPropsAsDict()
-    r0 = int(p0.get('_CIPRank', 0))
-    r1 = int(p1.get('_CIPRank', 0))
+    r0 = _get_cip_rank(mol.GetAtomWithIdx(pair_indices[0]))
+    r1 = _get_cip_rank(mol.GetAtomWithIdx(pair_indices[1]))
 
     if r0 != r1:
         return pair_indices[0] if r0 > r1 else pair_indices[1]
 
     # Same CIP rank: use canonical heavy-atom order
     try:
-        pos0 = int(p0['_CanonicalOrder'])
-        pos1 = int(p1['_CanonicalOrder'])
+        pos0 = mol.GetAtomWithIdx(pair_indices[0]).GetIntProp('_CanonicalOrder')
+        pos1 = mol.GetAtomWithIdx(pair_indices[1]).GetIntProp('_CanonicalOrder')
         return pair_indices[0] if pos0 > pos1 else pair_indices[1]
     except KeyError:
         # Both are H (not in heavy_order): min original index
@@ -518,18 +511,12 @@ def _order_sp3d_axial_2h(
     center_pos = np.array(conf.GetAtomPosition(center_idx))
 
     # Check equivalence: need 3 distinct CIP ranks among eq substituents
-    eq_ranks = []
-    for eq_idx in eq_indices:
-        props = mol.GetAtomWithIdx(eq_idx).GetPropsAsDict()
-        if '_CIPRank' not in props:
-            return None
-        eq_ranks.append(int(props['_CIPRank']))
+    eq_ranks = [_get_cip_rank(mol.GetAtomWithIdx(i)) for i in eq_indices]
     if len(set(eq_ranks)) < len(eq_indices):
         return None  # duplicate ranks → eq plane symmetric → H equivalent
 
     # Sort eq by CIP rank descending
-    eq_sorted = sorted(eq_indices, key=lambda i: -int(
-        mol.GetAtomWithIdx(i).GetPropsAsDict()['_CIPRank']))
+    eq_sorted = sorted(eq_indices, key=lambda i: -_get_cip_rank(mol.GetAtomWithIdx(i)))
     a_idx, b_idx, c_idx = eq_sorted[0], eq_sorted[1], eq_sorted[2]
 
     # Axis direction: from h1 toward h2 (arbitrary initial choice)
@@ -587,18 +574,12 @@ def _order_sp3d_equatorial_2h(
     Returns [first_idx, second_idx] or None if H are equivalent.
     """
     # Check equivalence: need distinct CIP ranks among axial substituents
-    ax_ranks = []
-    for ax_idx in axial_indices:
-        props = mol.GetAtomWithIdx(ax_idx).GetPropsAsDict()
-        if '_CIPRank' not in props:
-            return None
-        ax_ranks.append(int(props['_CIPRank']))
+    ax_ranks = [_get_cip_rank(mol.GetAtomWithIdx(i)) for i in axial_indices]
     if len(set(ax_ranks)) < 2:
         return None  # equal ranks → no defined z⁺ → H equivalent
 
     # z⁺: high CIP rank → low CIP rank
-    ax_sorted = sorted(axial_indices, key=lambda i: -int(
-        mol.GetAtomWithIdx(i).GetPropsAsDict()['_CIPRank']))
+    ax_sorted = sorted(axial_indices, key=lambda i: -_get_cip_rank(mol.GetAtomWithIdx(i)))
     ax_high, ax_low = ax_sorted[0], ax_sorted[1]
 
     conf = mol.GetConformer()
@@ -821,12 +802,7 @@ def _analyze_square_chirality(
     center_pos = np.array(conf.GetAtomPosition(center_idx))
 
     # Collect CIP ranks
-    sq_ranks = {}
-    for idx in square_indices:
-        props = mol.GetAtomWithIdx(idx).GetPropsAsDict()
-        if '_CIPRank' not in props:
-            return None
-        sq_ranks[idx] = int(props['_CIPRank'])
+    sq_ranks = {idx: _get_cip_rank(mol.GetAtomWithIdx(idx)) for idx in square_indices}
 
     # --- Step 1: check for 2 groups of duplicates ---
     from collections import Counter
@@ -967,8 +943,8 @@ def _order_sp3d2_cis_2h(
     if t1 is None or t2 is None:
         return None
 
-    r1 = int(mol.GetAtomWithIdx(t1).GetPropsAsDict().get('_CIPRank', 0))
-    r2 = int(mol.GetAtomWithIdx(t2).GetPropsAsDict().get('_CIPRank', 0))
+    r1 = _get_cip_rank(mol.GetAtomWithIdx(t1))
+    r2 = _get_cip_rank(mol.GetAtomWithIdx(t2))
 
     if r1 != r2:
         # Order by trans partner CIP rank (higher rank H first)
@@ -1071,8 +1047,7 @@ def _order_h_sp3d2(
             # fac: 3 H-X pairs
             ranks: dict[int, list[int]] = {}
             for _h, x in hx_pairs:
-                r = int(mol.GetAtomWithIdx(x).GetPropsAsDict().get(
-                    '_CIPRank', 0))
+                r = _get_cip_rank(mol.GetAtomWithIdx(x))
                 ranks.setdefault(r, []).append(_h)
 
             if len(ranks) == 3:
@@ -1138,8 +1113,7 @@ def _order_h_sp3d2(
         else:
             # non-H cis: 2 H-X + 1 H-H
             def _trans_rank(hx):
-                return int(mol.GetAtomWithIdx(hx[1]).GetPropsAsDict().get(
-                    '_CIPRank', 0))
+                return _get_cip_rank(mol.GetAtomWithIdx(hx[1]))
 
             ranks_hx = [_trans_rank(p) for p in hx_pairs]
             if len(set(ranks_hx)) >= 2:

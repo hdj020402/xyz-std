@@ -164,7 +164,7 @@ def standardize_xyz(
     mol = xyz_to_rdkit_mol(xyz_str)
     try:
         order = get_standard_atom_order(mol)
-    except Chem.rdchem.AtomValenceException:
+    except (Chem.rdchem.AtomValenceException, RuntimeError):
         mol = xyz_to_rdkit_mol(xyz_str, backend="rdkit")
         order = get_standard_atom_order(mol)
 
