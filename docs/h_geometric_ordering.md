@@ -44,7 +44,7 @@
         → 不存在"帧间手性不一致"问题
 ```
 
-等价 2H 的 geometric CCW 排序不产生化学上的区分，纯属多余计算。当前 `_order_h_sp3` / `_order_h_sp2` 在 `try_order` 返回 `None` 后 fallback 到 `_order_h_geometric` 是不必要的。等价 2H 直接返回 `list(h_indices)` 即可。
+等价 2H 的 geometric CCW 排序不产生化学上的区分，纯属多余计算。当前 `_order_h_sp3` / `_order_h_sp2` 在 `try_order` 返回 `None` 后 fallback 到 `_order_h_geometric` 是不必要的。等价 2H 返回 `sorted(h_indices)` 即可。
 
 ### 3+H 等价必须用 geometric
 
@@ -202,7 +202,7 @@ trans 对：1×H-X + 2×H-H。H-X 的 H 唯一（trans 非 H）。
 
 ## 改进要点总结
 
-1. **等价 2H 跳过 geometric**：`_order_h_sp3` / `_order_h_sp2` 中 `try_order` 返回 `None` 时直接返回 `list(h_indices)`，无需 fallback
+1. **等价 2H 跳过 geometric**：`_order_h_sp3` / `_order_h_sp2` 中 `try_order` 返回 `None` 时返回 `sorted(h_indices)`，无需 fallback
 
 2. **单 H 在调用方处理**：所有 `len(h_indices) <= 1` 的判断上移到各分发函数入口，`_order_h_geometric` 假设输入 `len(h_indices) >= 2`
 
