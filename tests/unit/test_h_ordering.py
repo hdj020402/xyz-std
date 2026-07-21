@@ -194,8 +194,7 @@ class TestTryOrder2hSp3:
             if len(h_nbrs) == 2 and has_cl:
                 Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
                 result = _order_2h_sp3(
-                    mol, atom.GetIdx(), h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                )
+                    mol, atom.GetIdx(), [h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx])
                 assert result is not None
                 assert len(result) == 2
                 return
@@ -213,8 +212,8 @@ class TestTryOrder2hSp3:
             if len(h_nbrs) == 2 and len(c_nbrs) == 2:
                 h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                 result = _order_2h_sp3(
-                    mol, atom.GetIdx(), h1, h2
-                )
+                    mol, atom.GetIdx(), [h1, h2
+                ])
                 assert result == sorted([h1, h2])
                 return
         pytest.skip("No symmetric CH2 found")
@@ -275,7 +274,7 @@ class TestTryOrder2hSp2:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    result = _order_2h_sp2(mol, center, partner, h1, h2)
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert result is not None, (
                         "sp2 CIP should succeed for asymmetric terminal alkene"
                     )
@@ -299,8 +298,8 @@ class TestTryOrder2hSp2:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    r1 = _order_2h_sp2(mol, center, partner, h1, h2)
-                    r2 = _order_2h_sp2(mol, center, partner, h1, h2)
+                    r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
+                    r2 = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert r1 == r2
                     return
         pytest.fail("No terminal =CH2 found")
@@ -320,8 +319,8 @@ class TestTryOrder2hSp2:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    r1 = _order_2h_sp2(mol, center, partner, h1, h2)
-                    r2 = _order_2h_sp2(mol, center, partner, h2, h1)
+                    r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
+                    r2 = _order_2h_sp2(mol, center, partner, [h2, h1])
                     # Both should succeed and contain the same H's
                     assert r1 is not None
                     assert r2 is not None
@@ -347,7 +346,7 @@ class TestTryOrder2hSp2:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    result = _order_2h_sp2(mol, center, partner, h1, h2)
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert result == sorted([h1, h2]), (
                         "sp2 CIP should return sorted when partner subs are equivalent"
                     )
@@ -395,7 +394,7 @@ class TestTryOrder2hAllene:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    result = _order_2h_sp2(mol, center, partner, h1, h2)
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert result == sorted([h1, h2]), (
                         "unsubstituted allene should return sorted"
                     )
@@ -417,7 +416,7 @@ class TestTryOrder2hAllene:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    result = _order_2h_sp2(mol, center, partner, h1, h2)
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert result is not None, (
                         "asymmetric allene should succeed"
                     )
@@ -441,8 +440,8 @@ class TestTryOrder2hAllene:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    r1 = _order_2h_sp2(mol, center, partner, h1, h2)
-                    r2 = _order_2h_sp2(mol, center, partner, h1, h2)
+                    r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
+                    r2 = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert r1 == r2
                     return
         pytest.fail("No terminal =CH2 found")
@@ -462,8 +461,8 @@ class TestTryOrder2hAllene:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    r1 = _order_2h_sp2(mol, center, partner, h1, h2)
-                    r2 = _order_2h_sp2(mol, center, partner, h2, h1)
+                    r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
+                    r2 = _order_2h_sp2(mol, center, partner, [h2, h1])
                     assert r1 is not None
                     assert r2 is not None
                     assert set(r1) == set(r2)
@@ -537,7 +536,7 @@ class TestTryOrder2hAlleneEven:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    result = _order_2h_sp2(mol, center, partner, h1, h2)
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert result == sorted([h1, h2]), (
                         "unsubstituted butatriene should return sorted"
                     )
@@ -559,7 +558,7 @@ class TestTryOrder2hAlleneEven:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    result = _order_2h_sp2(mol, center, partner, h1, h2)
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert result is not None, (
                         "asymmetric butatriene should succeed"
                     )
@@ -583,8 +582,8 @@ class TestTryOrder2hAlleneEven:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    r1 = _order_2h_sp2(mol, center, partner, h1, h2)
-                    r2 = _order_2h_sp2(mol, center, partner, h1, h2)
+                    r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
+                    r2 = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert r1 == r2
                     return
         pytest.fail("No terminal =CH2 found in butatriene")
@@ -604,8 +603,8 @@ class TestTryOrder2hAlleneEven:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    r1 = _order_2h_sp2(mol, center, partner, h1, h2)
-                    r2 = _order_2h_sp2(mol, center, partner, h2, h1)
+                    r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
+                    r2 = _order_2h_sp2(mol, center, partner, [h2, h1])
                     assert r1 is not None
                     assert r2 is not None
                     assert set(r1) == set(r2)
@@ -661,7 +660,7 @@ class TestTryOrder2hSp2OpenBabel:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    result = _order_2h_sp2(mol, center, partner, h1, h2)
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert result is not None, (
                         "sp2 CIP should succeed for asymmetric terminal alkene (OB)"
                     )
@@ -685,8 +684,8 @@ class TestTryOrder2hSp2OpenBabel:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    r1 = _order_2h_sp2(mol, center, partner, h1, h2)
-                    r2 = _order_2h_sp2(mol, center, partner, h1, h2)
+                    r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
+                    r2 = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert r1 == r2
                     return
         pytest.fail("No terminal =CH2 found")
@@ -707,7 +706,7 @@ class TestTryOrder2hSp2OpenBabel:
                     partner = bond.GetOtherAtomIdx(atom.GetIdx())
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
-                    result = _order_2h_sp2(mol, center, partner, h1, h2)
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
                     assert result == sorted([h1, h2]), (
                         "sp2 CIP should return sorted when partner subs are equivalent (OB)"
                     )
@@ -770,7 +769,7 @@ class TestTryOrder2hSignedVolume:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
-                    result = _order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    result = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
                     assert result is not None, (
                         "Signed volume should determine pro-R/pro-S for PH2"
                     )
@@ -787,8 +786,8 @@ class TestTryOrder2hSignedVolume:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
-                    r1 = _order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
-                    r2 = _order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    r1 = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
+                    r2 = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
                     assert r1 is not None
                     assert r1 == r2
                     return
@@ -802,8 +801,8 @@ class TestTryOrder2hSignedVolume:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
-                    r1 = _order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
-                    r2 = _order_2h_signed_volume(mol, atom.GetIdx(), h2, h1)
+                    r1 = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
+                    r2 = _order_2h_signed_volume(mol, atom.GetIdx(), [h2, h1])
                     assert r1 is not None and r2 is not None
                     assert set(r1) == set(r2)
                     assert r1 == [h1, h2] or r2 == [h2, h1]
@@ -818,7 +817,7 @@ class TestTryOrder2hSignedVolume:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
-                    result = _order_2h_sp3(mol, atom.GetIdx(), h1, h2)
+                    result = _order_2h_sp3(mol, atom.GetIdx(), [h1, h2])
                     assert result is not None, (
                         "_order_2h_sp3 should fallback to signed volume for P"
                     )
@@ -850,7 +849,7 @@ class TestTryOrder2hSignedVolume:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
-                    result = _order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    result = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
                     assert result == sorted([h1, h2]), "Symmetric SiH2 should return sorted"
                     return
         pytest.fail("No Si with 2H found")
@@ -863,7 +862,7 @@ class TestTryOrder2hSignedVolume:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
-                    result = _order_2h_signed_volume(mol, atom.GetIdx(), h1, h2)
+                    result = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
                     assert result == sorted([h1, h2]), "2-coordinate H2S should return sorted"
                     return
         pytest.fail("No S with 2H found")
@@ -1189,7 +1188,7 @@ class TestOrderSp3dAxial2h:
                 ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 assert len(ax_h) == 2
                 result = _order_sp3d_axial_2h(
-                    mol, atom.GetIdx(), ax_h[0], ax_h[1], ax, eq
+                    mol, atom.GetIdx(), ax_h, ax, eq
                 )
                 assert result is not None
                 assert len(result) == 2
@@ -1205,7 +1204,7 @@ class TestOrderSp3dAxial2h:
                 ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
                 ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 result = _order_sp3d_axial_2h(
-                    mol, atom.GetIdx(), ax_h[0], ax_h[1], ax, eq
+                    mol, atom.GetIdx(), ax_h, ax, eq
                 )
                 assert result == sorted(ax_h)
                 return
@@ -1219,10 +1218,10 @@ class TestOrderSp3dAxial2h:
                 ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
                 ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 r1 = _order_sp3d_axial_2h(
-                    mol, atom.GetIdx(), ax_h[0], ax_h[1], ax, eq
+                    mol, atom.GetIdx(), ax_h, ax, eq
                 )
                 r2 = _order_sp3d_axial_2h(
-                    mol, atom.GetIdx(), ax_h[1], ax_h[0], ax, eq
+                    mol, atom.GetIdx(), [ax_h[1], ax_h[0]], ax, eq
                 )
                 assert r1 is not None and r2 is not None
                 assert set(r1) == set(r2)
@@ -1258,7 +1257,7 @@ class TestOrderSp3dEquatorial2h:
                 eq_h = [h for h in eq if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 assert len(eq_h) == 2
                 result = _order_sp3d_equatorial_2h(
-                    mol, atom.GetIdx(), eq_h[0], eq_h[1], ax, eq
+                    mol, atom.GetIdx(), eq_h, ax, eq
                 )
                 assert result is not None
                 assert len(result) == 2
@@ -1274,7 +1273,7 @@ class TestOrderSp3dEquatorial2h:
                 ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
                 eq_h = [h for h in eq if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 result = _order_sp3d_equatorial_2h(
-                    mol, atom.GetIdx(), eq_h[0], eq_h[1], ax, eq
+                    mol, atom.GetIdx(), eq_h, ax, eq
                 )
                 assert result == sorted(eq_h)
                 return
@@ -1288,10 +1287,10 @@ class TestOrderSp3dEquatorial2h:
                 ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
                 eq_h = [h for h in eq if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 r1 = _order_sp3d_equatorial_2h(
-                    mol, atom.GetIdx(), eq_h[0], eq_h[1], ax, eq
+                    mol, atom.GetIdx(), eq_h, ax, eq
                 )
                 r2 = _order_sp3d_equatorial_2h(
-                    mol, atom.GetIdx(), eq_h[1], eq_h[0], ax, eq
+                    mol, atom.GetIdx(), [eq_h[1], eq_h[0]], ax, eq
                 )
                 assert r1 is not None and r2 is not None
                 assert set(r1) == set(r2)
@@ -1456,7 +1455,7 @@ class TestOrderSp3d2Trans2h:
                 if len(h_trans) == 1:
                     h1, h2 = h_trans[0]
                     result = _order_sp3d2_trans_2h(
-                        mol, atom.GetIdx(), h1, h2, trans_pairs
+                        mol, atom.GetIdx(), [h1, h2], trans_pairs
                     )
                     assert result is not None
                     assert len(result) == 2
@@ -1476,7 +1475,7 @@ class TestOrderSp3d2Trans2h:
                 if h_trans:
                     h1, h2 = h_trans[0]
                     result = _order_sp3d2_trans_2h(
-                        mol, atom.GetIdx(), h1, h2, trans_pairs
+                        mol, atom.GetIdx(), [h1, h2], trans_pairs
                     )
                     assert result == sorted([h1, h2])
                     return
@@ -1494,10 +1493,10 @@ class TestOrderSp3d2Trans2h:
                 if len(h_trans) == 1:
                     h1, h2 = h_trans[0]
                     r1 = _order_sp3d2_trans_2h(
-                        mol, atom.GetIdx(), h1, h2, trans_pairs
+                        mol, atom.GetIdx(), [h1, h2], trans_pairs
                     )
                     r2 = _order_sp3d2_trans_2h(
-                        mol, atom.GetIdx(), h2, h1, trans_pairs
+                        mol, atom.GetIdx(), [h2, h1], trans_pairs
                     )
                     assert r1 is not None and r2 is not None
                     assert r1 == [h1, h2] or r2 == [h2, h1]
@@ -1526,7 +1525,7 @@ class TestOrderSp3d2Cis2h:
                             if not is_trans:
                                 result = _order_sp3d2_cis_2h(
                                     mol, atom.GetIdx(),
-                                    h_all[i], h_all[j], trans_pairs
+                                    [h_all[i], h_all[j]], trans_pairs
                                 )
                                 assert result is not None
                                 assert len(result) == 2
@@ -1552,7 +1551,7 @@ class TestOrderSp3d2Cis2h:
                             if not is_trans:
                                 result = _order_sp3d2_cis_2h(
                                     mol, atom.GetIdx(),
-                                    h_all[i], h_all[j], trans_pairs
+                                    [h_all[i], h_all[j]], trans_pairs
                                 )
                                 assert result == sorted([h_all[i], h_all[j]])
                                 return

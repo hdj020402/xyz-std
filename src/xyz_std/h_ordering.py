@@ -151,8 +151,7 @@ def _signed_tetrahedron_volume(
 def _order_2h_signed_volume(
     mol: Chem.Mol,
     center_idx: int,
-    h1_idx: int,
-    h2_idx: int
+    h_indices: list[int],
 ) -> list[int]:
     """Order 2 H on a prochiral center via signed volume of tetrahedron.
 
@@ -168,6 +167,7 @@ def _order_2h_signed_volume(
 
     Returns [pro-R_idx, pro-S_idx] or sorted if undetermined.
     """
+    h1_idx, h2_idx = h_indices
     conf = mol.GetConformer()
     center_pos = np.array(conf.GetAtomPosition(center_idx))
     center_atom = mol.GetAtomWithIdx(center_idx)
@@ -205,8 +205,7 @@ def _order_2h_signed_volume(
 def _order_2h_sp3(
     mol: Chem.Mol,
     center_idx: int,
-    h1_idx: int,
-    h2_idx: int
+    h_indices: list[int],
 ) -> list[int]:
     """
     Order 2 H on sp3 center via deuterium substitution + CIP assignment.
@@ -215,6 +214,7 @@ def _order_2h_sp3(
 
     Returns [pro-R_idx, pro-S_idx] or sorted if undetermined.
     """
+    h1_idx, h2_idx = h_indices
     mol_tmp = Chem.RWMol(Chem.Mol(mol))
     Chem.AssignAtomChiralTagsFromStructure(mol_tmp)
     mol_tmp.GetAtomWithIdx(h1_idx).SetIsotope(2)
@@ -228,7 +228,7 @@ def _order_2h_sp3(
 
     # RDKit cannot assign CIP (non-carbon centers: P, S, As, etc.)
     # Fall back to manual signed-volume determination
-    return _order_2h_signed_volume(mol, center_idx, h1_idx, h2_idx)
+    return _order_2h_signed_volume(mol, center_idx, h_indices)
 
 
 def _walk_allene_far_end(
@@ -281,8 +281,7 @@ def _order_2h_allene(
     mol: Chem.Mol,
     center_idx: int,
     partner_idx: int,
-    h1_idx: int,
-    h2_idx: int
+    h_indices: list[int],
 ) -> list[int]:
     """Order 2 H on terminal =CH2 of allene/cumulene.
 
@@ -299,6 +298,7 @@ def _order_2h_allene(
 
     Returns sorted if H are equivalent.
     """
+    h1_idx, h2_idx = h_indices
     far_info = _walk_allene_far_end(mol, center_idx, partner_idx)
     if far_info is None:
         return sorted([h1_idx, h2_idx])
@@ -362,8 +362,7 @@ def _order_2h_sp2(
     mol: Chem.Mol,
     center_idx: int,
     partner_idx: int,
-    h1_idx: int,
-    h2_idx: int
+    h_indices: list[int],
 ) -> list[int]:
     """Order 2 H on sp2 =CH2 via CIP rank + dihedral angle.
 
@@ -374,11 +373,12 @@ def _order_2h_sp2(
 
     Returns [pro-Z_idx, pro-E_idx] or sorted if H are equivalent.
     """
+    h1_idx, h2_idx = h_indices
     partner_atom = mol.GetAtomWithIdx(partner_idx)
 
     # Allene/cumulene: partner is sp → axial chirality ordering
     if partner_atom.GetHybridization() == Chem.HybridizationType.SP:
-        return _order_2h_allene(mol, center_idx, partner_idx, h1_idx, h2_idx)
+        return _order_2h_allene(mol, center_idx, partner_idx, h_indices)
 
     # Normal sp2: partner's directly-bonded substituents
     partner_subs = [
@@ -498,12 +498,11 @@ def _order_h_sp2(
 ) -> list[int]:
     """Order H on an sp2 center: Z/E or allene axial chirality."""
     if len(h_indices) == 2:
-        h1_idx, h2_idx = h_indices
         center_atom = mol.GetAtomWithIdx(center_idx)
         for bond in center_atom.GetBonds():
             if bond.GetBondTypeAsDouble() == 2.0:
                 partner_idx = bond.GetOtherAtomIdx(center_idx)
-                return _order_2h_sp2(mol, center_idx, partner_idx, h1_idx, h2_idx)
+                return _order_2h_sp2(mol, center_idx, partner_idx, h_indices)
         # No double bond found: sorted for determinism
         return sorted(h_indices)
     return _order_h_geometric(mol, center_idx, h_indices)
@@ -516,18 +515,16 @@ def _order_h_sp3(
 ) -> list[int]:
     """Order H on an sp3 center: CIP pro-R/S (deuterium -> signed volume)."""
     if len(h_indices) == 2:
-        h1_idx, h2_idx = h_indices
-        return _order_2h_sp3(mol, center_idx, h1_idx, h2_idx)
+        return _order_2h_sp3(mol, center_idx, h_indices)
     return _order_h_geometric(mol, center_idx, h_indices)
 
 
 def _order_sp3d_axial_2h(
     mol: Chem.Mol,
     center_idx: int,
-    h1_idx: int,
-    h2_idx: int,
+    h_indices: list[int],
     axial_indices: list[int],
-    eq_indices: list[int]
+    eq_indices: list[int],
 ) -> list[int]:
     """Order 2 axial H on SP3D via equatorial plane chirality.
 
@@ -542,6 +539,7 @@ def _order_sp3d_axial_2h(
 
     Returns [first_idx, second_idx] or sorted if H are equivalent.
     """
+    h1_idx, h2_idx = h_indices
     conf = mol.GetConformer()
 
     # Check equivalence: need 3 distinct CIP ranks among eq substituents
@@ -569,10 +567,9 @@ def _order_sp3d_axial_2h(
 def _order_sp3d_equatorial_2h(
     mol: Chem.Mol,
     center_idx: int,
-    h1_idx: int,
-    h2_idx: int,
+    h_indices: list[int],
     axial_indices: list[int],
-    eq_indices: list[int]
+    eq_indices: list[int],
 ) -> list[int]:
     """Order 2 equatorial H on SP3D via axial CIP direction + atan2.
 
@@ -586,6 +583,7 @@ def _order_sp3d_equatorial_2h(
 
     Returns [first_idx, second_idx] or sorted if H are equivalent.
     """
+    h1_idx, h2_idx = h_indices
     # Check equivalence: need distinct CIP ranks among axial substituents
     ax_ranks = [_get_cip_rank(mol.GetAtomWithIdx(i)) for i in axial_indices]
     if len(set(ax_ranks)) < 2:
@@ -695,7 +693,7 @@ def _order_h_sp3d(
     # Order axial H group
     if len(axial_h) == 2:
         result.extend(_order_sp3d_axial_2h(
-            mol, center_idx, axial_h[0], axial_h[1], axial_nbrs, eq_nbrs
+            mol, center_idx, axial_h, axial_nbrs, eq_nbrs
         ))
     elif len(axial_h) == 1:
         result.extend(axial_h)
@@ -703,7 +701,7 @@ def _order_h_sp3d(
     # Order equatorial H group
     if len(eq_h) == 2:
         result.extend(_order_sp3d_equatorial_2h(
-            mol, center_idx, eq_h[0], eq_h[1], axial_nbrs, eq_nbrs
+            mol, center_idx, eq_h, axial_nbrs, eq_nbrs
         ))
     elif len(eq_h) == 3:
         # eq 3H: z⁺ from axial pair, CCW geometric
@@ -847,9 +845,8 @@ def _analyze_square_chirality(
 def _order_sp3d2_trans_2h(
     mol: Chem.Mol,
     center_idx: int,
-    h1_idx: int,
-    h2_idx: int,
-    trans_pairs: list[tuple[int, int]]
+    h_indices: list[int],
+    trans_pairs: list[tuple[int, int]],
 ) -> list[int]:
     """Order 2 trans H on an octahedral center via square chirality.
 
@@ -857,6 +854,7 @@ def _order_sp3d2_trans_2h(
     CW when looking from h1→h2 means h1 is at z⁺.
     Returns [z⁺_idx, z⁻_idx] or sorted if equivalent.
     """
+    h1_idx, h2_idx = h_indices
     # Find the 4 cis substituents (all neighbors except h1 and h2)
     center_atom = mol.GetAtomWithIdx(center_idx)
     all_nbrs = {n.GetIdx() for n in center_atom.GetNeighbors()}
@@ -881,9 +879,8 @@ def _order_sp3d2_trans_2h(
 def _order_sp3d2_cis_2h(
     mol: Chem.Mol,
     center_idx: int,
-    h1_idx: int,
-    h2_idx: int,
-    trans_pairs: list[tuple[int, int]]
+    h_indices: list[int],
+    trans_pairs: list[tuple[int, int]],
 ) -> list[int]:
     """Order 2 cis H on an octahedral center.
 
@@ -891,6 +888,7 @@ def _order_sp3d2_cis_2h(
     of their trans partners. If the trans partners have equal CIP rank,
     analyze each H's cis square chirality.
     """
+    h1_idx, h2_idx = h_indices
     # Find trans partner for each H
     t1 = None
     t2 = None
@@ -974,11 +972,11 @@ def _order_h_sp3d2(
         )
         if is_trans:
             return _order_sp3d2_trans_2h(
-                mol, center_idx, h1_idx, h2_idx, trans_pairs
+                mol, center_idx, h_indices, trans_pairs
             )
         else:
             return _order_sp3d2_cis_2h(
-                mol, center_idx, h1_idx, h2_idx, trans_pairs
+                mol, center_idx, h_indices, trans_pairs
             )
 
     # --- 3H-6H: classify trans pairs ---
@@ -1022,8 +1020,7 @@ def _order_h_sp3d2(
                             if len(hs) == 2][0]
                 result.append(ranks[unique_rank][0])
                 result.extend(_order_sp3d2_cis_2h(
-                    mol, center_idx,
-                    ranks[dup_rank][0], ranks[dup_rank][1], trans_pairs
+                    mol, center_idx, ranks[dup_rank], trans_pairs
                 ))
             else:
                 # AAA: all equivalent → min-idx H first, deuterate, cis-2H
@@ -1038,7 +1035,7 @@ def _order_h_sp3d2(
                 Chem.AssignStereochemistry(mol_tmp, cleanIt=True, force=True)
 
                 result.extend(_order_sp3d2_cis_2h(
-                    mol_tmp, center_idx, h2, h3, trans_pairs
+                    mol_tmp, center_idx, [h2, h3], trans_pairs
                 ))
         else:
             # mer: 1 H-H + 1 H-X
@@ -1046,7 +1043,7 @@ def _order_h_sp3d2(
                 result.append(hx_pairs[0][0])
             for h_a, h_b in hh_pairs:
                 result.extend(_order_sp3d2_trans_2h(
-                    mol, center_idx, h_a, h_b, trans_pairs
+                    mol, center_idx, [h_a, h_b], trans_pairs
                 ))
 
     # --- 4H ---
@@ -1072,7 +1069,7 @@ def _order_h_sp3d2(
             # H-H pair
             for h_a, h_b in hh_pairs:
                 result.extend(_order_sp3d2_trans_2h(
-                    mol, center_idx, h_a, h_b, trans_pairs
+                    mol, center_idx, [h_a, h_b], trans_pairs
                 ))
 
     # --- 5H ---
