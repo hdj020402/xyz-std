@@ -3,6 +3,68 @@ from rdkit import Chem
 from rdkit.Chem import rdMolTransforms
 
 
+def _build_perp_basis(
+    z_axis: np.ndarray,
+    x_direction: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build orthonormal (x, y) basis on the plane perpendicular to z_axis.
+
+    If x_direction is given, the x-axis is aligned toward its projection
+    onto the perpendicular plane. Otherwise, an arbitrary seed vector is used.
+
+    Returns (x_axis, y_axis) forming a right-handed basis with z_axis.
+    """
+    if x_direction is not None:
+        x_vec = x_direction - np.dot(x_direction, z_axis) * z_axis
+    else:
+        arbitrary = np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        x_vec = arbitrary - np.dot(arbitrary, z_axis) * z_axis
+    x_axis = x_vec / np.linalg.norm(x_vec)
+    y_axis = np.cross(z_axis, x_axis)
+    return x_axis, y_axis
+
+
+def _projected_angle(
+    v: np.ndarray,
+    z_axis: np.ndarray,
+    x_axis: np.ndarray,
+    y_axis: np.ndarray,
+) -> float:
+    """atan2 CCW angle of vector v projected onto plane perpendicular to z_axis."""
+    v_proj = v - np.dot(v, z_axis) * z_axis
+    return float(np.arctan2(np.dot(v_proj, y_axis), np.dot(v_proj, x_axis)))
+
+
+def _is_ccw(
+    mol: Chem.Mol,
+    center_idx: int,
+    z_axis: np.ndarray,
+    atom_indices: tuple[int, ...],
+) -> bool:
+    """Check if atoms appear CCW when projected onto plane ⟂ z_axis.
+
+    The atoms, in the given order, should trace a CCW path: atan2 angles
+    are strictly increasing with exactly one wrap from +π back to -π.
+    Returns True when looking along z_axis direction.
+    """
+    n = len(atom_indices)
+    if n < 3:
+        raise ValueError(f"_is_ccw requires at least 3 atoms, got {n}")
+
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    x_axis, y_axis = _build_perp_basis(z_axis)
+
+    angles = []
+    for idx in atom_indices:
+        v = np.array(conf.GetAtomPosition(idx)) - center_pos
+        angles.append(_projected_angle(v, z_axis, x_axis, y_axis))
+
+    # CCW: exactly one descent when traversing the cycle
+    descents = sum(1 for i in range(n) if angles[i] > angles[(i + 1) % n])
+    return descents == 1
+
+
 def _order_h_by_angle_projection(
     center_pos: np.ndarray,
     ref_pos: np.ndarray,
@@ -31,20 +93,11 @@ def _order_h_by_angle_projection(
         return [idx for idx, _ in h_pos_list]
     z_axis = z_axis / z_norm
 
-    # Gram-Schmidt: build orthonormal x/y axes on the perpendicular plane
-    arbitrary = np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-    x_axis = arbitrary - np.dot(arbitrary, z_axis) * z_axis
-    x_norm = np.linalg.norm(x_axis)
-    if x_norm < 1e-10:
-        return [idx for idx, _ in h_pos_list]
-    x_axis = x_axis / x_norm
-    y_axis = np.cross(z_axis, x_axis)
+    x_axis, y_axis = _build_perp_basis(z_axis)
 
     angles = []
     for h_idx, h_pos in h_pos_list:
-        vec = h_pos - center_pos
-        vec_proj = vec - np.dot(vec, z_axis) * z_axis
-        angle = np.arctan2(np.dot(vec_proj, y_axis), np.dot(vec_proj, x_axis))
+        angle = _projected_angle(h_pos - center_pos, z_axis, x_axis, y_axis)
         angles.append((angle, h_idx))
 
     angles.sort()
@@ -509,7 +562,6 @@ def _order_sp3d_axial_2h(
     Returns [first_idx, second_idx] or sorted if H are equivalent.
     """
     conf = mol.GetConformer()
-    center_pos = np.array(conf.GetAtomPosition(center_idx))
 
     # Check equivalence: need 3 distinct CIP ranks among eq substituents
     eq_ranks = [_get_cip_rank(mol.GetAtomWithIdx(i)) for i in eq_indices]
@@ -526,29 +578,8 @@ def _order_sp3d_axial_2h(
     axis = h2_pos - h1_pos
     z_axis = axis / np.linalg.norm(axis)
 
-    # Build orthonormal basis on plane ⟂ z_axis
-    arbitrary = np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-    x_axis = arbitrary - np.dot(arbitrary, z_axis) * z_axis
-    x_axis = x_axis / np.linalg.norm(x_axis)
-    y_axis = np.cross(z_axis, x_axis)
-
-    # Compute projected angles of eq substituents (CIP order: a→b→c)
-    def _proj_angle(atom_idx):
-        v = np.array(conf.GetAtomPosition(atom_idx)) - center_pos
-        v_proj = v - np.dot(v, z_axis) * z_axis
-        return np.arctan2(np.dot(v_proj, y_axis), np.dot(v_proj, x_axis))
-
-    ang_a = _proj_angle(a_idx) % (2 * np.pi)
-    ang_b = _proj_angle(b_idx) % (2 * np.pi)
-    ang_c = _proj_angle(c_idx) % (2 * np.pi)
-
-    # a→b→c is CCW if angles are in increasing cyclic order
-    ccw = ((ang_a < ang_b < ang_c)
-           or (ang_b < ang_c < ang_a)
-           or (ang_c < ang_a < ang_b))
-
-    # CCW when looking from h1 → h2 means h1 is at z⁺
-    if ccw:
+    # a→b→c CCW when looking from h1 → h2 → h1 is at z⁺
+    if _is_ccw(mol, center_idx, z_axis, (a_idx, b_idx, c_idx)):
         return [h1_idx, h2_idx]
     else:
         return [h2_idx, h1_idx]
@@ -599,19 +630,13 @@ def _order_sp3d_equatorial_2h(
 
     # Build orthonormal basis: x_axis toward eq reference
     ref_vec = np.array(conf.GetAtomPosition(ref_idx)) - center_pos
-    x_vec = ref_vec - np.dot(ref_vec, z_axis) * z_axis
-    x_norm = np.linalg.norm(x_vec)
-    if x_norm < 1e-10:
-        return sorted([h1_idx, h2_idx])
-    x_axis = x_vec / x_norm
-    y_axis = np.cross(z_axis, x_axis)
+    x_axis, y_axis = _build_perp_basis(z_axis, x_direction=ref_vec)
 
     # Compute atan2 angles for H atoms
     angles = []
     for h_idx in (h1_idx, h2_idx):
         v = np.array(conf.GetAtomPosition(h_idx)) - center_pos
-        v_proj = v - np.dot(v, z_axis) * z_axis
-        angle = np.arctan2(np.dot(v_proj, y_axis), np.dot(v_proj, x_axis))
+        angle = _projected_angle(v, z_axis, x_axis, y_axis)
         angles.append((angle, h_idx))
 
     angles.sort()
@@ -847,27 +872,8 @@ def _analyze_square_chirality(
     z_axis = h_to_pos - h_from_pos
     z_axis = z_axis / np.linalg.norm(z_axis)
 
-    # Gram-Schmidt basis on ⟂ plane
-    arbitrary = np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-    x_axis = arbitrary - np.dot(arbitrary, z_axis) * z_axis
-    x_axis = x_axis / np.linalg.norm(x_axis)
-    y_axis = np.cross(z_axis, x_axis)
-
-    def _proj_angle(atom_idx):
-        v = np.array(conf.GetAtomPosition(atom_idx)) - center_pos
-        v_proj = v - np.dot(v, z_axis) * z_axis
-        return np.arctan2(np.dot(v_proj, y_axis), np.dot(v_proj, x_axis))
-
     # kept[0], kept[1], kept[2] are in CIP descending order
-    ang0 = _proj_angle(kept[0]) % (2 * np.pi)
-    ang1 = _proj_angle(kept[1]) % (2 * np.pi)
-    ang2 = _proj_angle(kept[2]) % (2 * np.pi)
-
-    ccw = ((ang0 < ang1 < ang2)
-           or (ang1 < ang2 < ang0)
-           or (ang2 < ang0 < ang1))
-
-    return ccw
+    return _is_ccw(mol, center_idx, z_axis, (kept[0], kept[1], kept[2]))
 
 
 def _order_sp3d2_trans_2h(
