@@ -68,7 +68,8 @@ def _is_ccw(
 def _order_h_by_angle_projection(
     center_pos: np.ndarray,
     z_axis: np.ndarray,
-    h_pos_list: list[tuple[int, np.ndarray]]
+    h_pos_list: list[tuple[int, np.ndarray]],
+    x_direction: np.ndarray | None = None,
 ) -> list[int]:
     """Order H atoms by CCW angle projection onto plane ⟂ z_axis.
 
@@ -76,6 +77,8 @@ def _order_h_by_angle_projection(
         center_pos: Position of the center heavy atom
         z_axis: Unit vector defining the projection axis
         h_pos_list: List of (h_index, h_position) tuples
+        x_direction: Optional vector to align x-axis toward (for determinism
+                     with 2 H where atan2 wrap-around could flip order)
 
     Returns:
         Ordered list of H atom indices (sorted by CCW angle)
@@ -83,7 +86,7 @@ def _order_h_by_angle_projection(
     if len(h_pos_list) <= 1:
         return [idx for idx, _ in h_pos_list]
 
-    x_axis, y_axis = _build_perp_basis(z_axis)
+    x_axis, y_axis = _build_perp_basis(z_axis, x_direction=x_direction)
 
     angles = []
     for h_idx, h_pos in h_pos_list:
@@ -600,25 +603,12 @@ def _order_sp3d_equatorial_2h(
     z_axis = ax_high_pos - ax_low_pos
     z_axis = z_axis / np.linalg.norm(z_axis)
 
-    # Find the non-H equatorial reference
-    eq_non_h = [i for i in eq_indices if i not in (h1_idx, h2_idx)]
-    if len(eq_non_h) != 1:
-        return sorted([h1_idx, h2_idx])
-    ref_idx = eq_non_h[0]
+    ref_idx = [i for i in eq_indices if i not in (h1_idx, h2_idx)][0]
 
-    # Build orthonormal basis: x_axis toward eq reference
     ref_vec = np.array(conf.GetAtomPosition(ref_idx)) - center_pos
-    x_axis, y_axis = _build_perp_basis(z_axis, x_direction=ref_vec)
-
-    # Compute atan2 angles for H atoms
-    angles = []
-    for h_idx in (h1_idx, h2_idx):
-        v = np.array(conf.GetAtomPosition(h_idx)) - center_pos
-        angle = _projected_angle(v, z_axis, x_axis, y_axis)
-        angles.append((angle, h_idx))
-
-    angles.sort()
-    return [h_idx for _, h_idx in angles]
+    h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in (h1_idx, h2_idx)]
+    return _order_h_by_angle_projection(
+        center_pos, z_axis, h_pos_list, x_direction=ref_vec)
 
 
 def _classify_sp3d_positions(
