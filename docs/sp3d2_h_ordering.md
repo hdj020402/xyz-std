@@ -4,7 +4,7 @@
 
 以下原则来自 `h_geometric_ordering.md` 的系统分析，适用于所有杂化类型（包括 SP3D2）：
 
-1. **等价 2H 不需要 geometric**：化学方法返回 `None` 意味着 2H 等价。取代后只剩 1H，不存在 prochiral pair，直接返回 `list(h_indices)` 即可。
+1. **等价 2H 不需要 geometric**：化学方法返回 `None` 意味着 2H 等价。取代后只剩 1H，不存在 prochiral pair，返回 `sorted([h1, h2])` 即可。
 
 2. **`len(h_indices) <= 1` 在调用方处理**：单 H 不应进入 geometric 排序函数。各分发函数入口检查，`_order_h_geometric` 假设输入 ≥ 2。
 
@@ -31,7 +31,7 @@
 
 ## 2H
 
-> **原则**：等价 2H（化学方法返回 None）不需要 geometric。取代后只剩 1H，不存在 prochiral pair，直接返回 `list(h_indices)` 即可。详见 `h_geometric_ordering.md`。
+> **原则**：等价 2H（化学方法返回 None）不需要 geometric。取代后只剩 1H，不存在 prochiral pair，返回 `sorted([h1, h2])` 即可。详见 `h_geometric_ordering.md`。
 
 ### 2H trans
 
@@ -44,7 +44,7 @@
 两个 H 互不 trans。各自有 trans 伙伴 T_a、T_b。
 
 - **T_a CIP ≠ T_b CIP**：trans 伙伴 rank 高的 H 在前
-- **T_a CIP = T_b CIP**：分别分析每个 H 的 cis 正方形。两个正方形互为镜像，结果必然一个 CCW 一个 CW。CCW 的 H 在前。两个 square 都返回 None → 2H 等价，直接返回
+- **T_a CIP = T_b CIP**：分别分析每个 H 的 cis 正方形（视线方向 T→H，即从 trans 伙伴看向 H）。两个正方形互为镜像，结果必然一个 CCW 一个 CW。CCW 的 H 在前。两个 square 都返回 None → 2H 等价，直接返回
 
 ---
 
@@ -101,31 +101,31 @@ H-X 的 H 环境独特（trans 非 H），作为 ax 排第一。其余 4 个 H�
 
 ```text
 _order_h_sp3d2:
-  n_H ≤ 1 → 调用方直接返回（不进 geometric）
-
-  _find_sp3d2_trans_pairs → 3 对 trans
+  _find_sp3d2_trans_pairs → 3 对 trans → trans_of 双向映射
+  分类 trans pairs → hh_pairs / hx_pairs / xx_pairs
 
   n_H == 2:
-    is_trans? → _order_sp3d2_trans_2h（正方形手性 / 等价直接返回）
-    else     → _order_sp3d2_cis_2h（trans 伙伴 CIP 比较 / cis 正方形手性 / 等价直接返回）
+    len(hh_pairs)==1 → _order_sp3d2_trans_2h（正方形手性 / sorted）
+    len(hx_pairs)==2 → _order_sp3d2_cis_2h（trans 伙伴 CIP / T→H 正方形手性 / sorted）
 
-  n_H == 3:
-    trans 对分类 → H-H 还是 H-X
-    fac (3×H-X) → ABC（CIP 降序）/ AAB（独特 H + 2H cis）
-                    / AAA（min-idx H + 氘代 + cis-2H）
-    mer (1×H-H + 1×H-X) → H-X 先 + H-H trans
+  n_H == 3 → _order_sp3d2_3h:
+    fac (3×H-X) → ABC（CIP 降序）/ AAB（unique H + 2H cis）
+                    / AAA（min-idx H + _deuterate_atom + cis-2H）
+    mer (1×H-H + 1×H-X) → H-X 先 + _order_sp3d2_trans_2h
 
-  n_H == 4:
-    非 H trans → 以非 H trans 对为 z 轴（CIP 定 z⁺ / 等价时 _CanonicalOrder），geometric CCW
-    非 H cis  → H-X 组（CIP / rank 同则等价直接返回）+ H-H 组（2H trans）
+  n_H == 4 → _order_sp3d2_4h:
+    非 H trans → _get_z_plus_vec z⁺ + _order_h_geometric CCW
+    非 H cis  → H-X 组（CIP 降序 / rank 同则 sorted）+ _order_sp3d2_trans_2h
 
-  n_H == 5:
-    H-X 先（ax）→ 以 trans H-X 对为 z 轴，geometric CCW 排序 eq 4H
+  n_H == 5 → _order_sp3d2_5h:
+    H-X 先（ax）→ _get_z_plus_vec(H, X) z⁺ + _order_h_geometric CCW eq 4H
 
-  n_H == 6:
-    选 ax trans 对（min-idx）先 → 其余 4H geometric（沿 ax 方向）
+  n_H == 6 → _order_sp3d2_6h:
+    选 ax trans 对（min-idx）先 → _get_z_plus_vec z⁺ + 其余 4H geometric
 
   说明：
+  - _analyze_square_chirality 接收 trans_of 避免重复计算对角线
+  - Step 1 用 len(set(rank_values)) < 3 取代 Counter
   - geometric 的 z 轴均显式由 trans pair 确定，不使用 max-Z 自动选择
-  - 等价 2H 在任何路径中都不需要 geometric，直接返回即可
+  - 等价 2H 在任何路径中都不需要 geometric，直接 sorted 返回
 ```

@@ -1032,6 +1032,13 @@ class TestOrderHSp3d:
         pytest.fail("No P with H found")
 
 
+def _make_trans_of(trans_pairs: list[tuple[int, int]]) -> dict[int, int]:
+    """Build bidirectional trans-partner lookup from trans pair list."""
+    trans_of = dict(trans_pairs)
+    trans_of.update({b: a for a, b in trans_pairs})
+    return trans_of
+
+
 class TestOrderHSp3d2:
     """Tests for _order_h_sp3d2 (octahedral H ordering)."""
 
@@ -1470,13 +1477,14 @@ class TestOrderSp3d2Trans2h:
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                trans_of = _make_trans_of(trans_pairs)
                 h_trans = [(a, b) for a, b in trans_pairs
                            if mol.GetAtomWithIdx(a).GetSymbol() == "H"
                            and mol.GetAtomWithIdx(b).GetSymbol() == "H"]
                 if len(h_trans) == 1:
                     h1, h2 = h_trans[0]
                     result = _order_sp3d2_trans_2h(
-                        mol, atom.GetIdx(), [h1, h2], trans_pairs
+                        mol, atom.GetIdx(), [h1, h2], trans_of
                     )
                     assert result is not None
                     assert len(result) == 2
@@ -1490,13 +1498,14 @@ class TestOrderSp3d2Trans2h:
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                trans_of = _make_trans_of(trans_pairs)
                 h_trans = [(a, b) for a, b in trans_pairs
                            if mol.GetAtomWithIdx(a).GetSymbol() == "H"
                            and mol.GetAtomWithIdx(b).GetSymbol() == "H"]
                 if h_trans:
                     h1, h2 = h_trans[0]
                     result = _order_sp3d2_trans_2h(
-                        mol, atom.GetIdx(), [h1, h2], trans_pairs
+                        mol, atom.GetIdx(), [h1, h2], trans_of
                     )
                     assert result == sorted([h1, h2])
                     return
@@ -1508,16 +1517,17 @@ class TestOrderSp3d2Trans2h:
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                trans_of = _make_trans_of(trans_pairs)
                 h_trans = [(a, b) for a, b in trans_pairs
                            if mol.GetAtomWithIdx(a).GetSymbol() == "H"
                            and mol.GetAtomWithIdx(b).GetSymbol() == "H"]
                 if len(h_trans) == 1:
                     h1, h2 = h_trans[0]
                     r1 = _order_sp3d2_trans_2h(
-                        mol, atom.GetIdx(), [h1, h2], trans_pairs
+                        mol, atom.GetIdx(), [h1, h2], trans_of
                     )
                     r2 = _order_sp3d2_trans_2h(
-                        mol, atom.GetIdx(), [h2, h1], trans_pairs
+                        mol, atom.GetIdx(), [h2, h1], trans_of
                     )
                     assert r1 is not None and r2 is not None
                     assert r1 == [h1, h2] or r2 == [h2, h1]
@@ -1534,6 +1544,7 @@ class TestOrderSp3d2Cis2h:
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                trans_of = _make_trans_of(trans_pairs)
                 h_all = [n.GetIdx() for n in atom.GetNeighbors()
                          if n.GetAtomicNum() == 1]
                 if len(h_all) >= 2:
@@ -1546,7 +1557,7 @@ class TestOrderSp3d2Cis2h:
                             if not is_trans:
                                 result = _order_sp3d2_cis_2h(
                                     mol, atom.GetIdx(),
-                                    [h_all[i], h_all[j]], trans_pairs
+                                    [h_all[i], h_all[j]], trans_of
                                 )
                                 assert result is not None
                                 assert len(result) == 2
@@ -1560,6 +1571,7 @@ class TestOrderSp3d2Cis2h:
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                trans_of = _make_trans_of(trans_pairs)
                 h_all = [n.GetIdx() for n in atom.GetNeighbors()
                          if n.GetAtomicNum() == 1]
                 if len(h_all) >= 2:
@@ -1572,7 +1584,7 @@ class TestOrderSp3d2Cis2h:
                             if not is_trans:
                                 result = _order_sp3d2_cis_2h(
                                     mol, atom.GetIdx(),
-                                    [h_all[i], h_all[j]], trans_pairs
+                                    [h_all[i], h_all[j]], trans_of
                                 )
                                 assert result == sorted([h_all[i], h_all[j]])
                                 return

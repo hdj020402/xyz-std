@@ -177,6 +177,15 @@ def _signed_tetrahedron_volume(
     return float(np.dot(a_rel, np.cross(b_rel, c_rel)))
 
 
+def _deuterate_atom(mol: Chem.Mol, atom_idx: int) -> Chem.Mol:
+    """Return a copy of mol with atom_idx deuterated and stereochemistry reassigned."""
+    mol_tmp = Chem.RWMol(Chem.Mol(mol))
+    Chem.AssignAtomChiralTagsFromStructure(mol_tmp)
+    mol_tmp.GetAtomWithIdx(atom_idx).SetIsotope(2)
+    Chem.AssignStereochemistry(mol_tmp, cleanIt=True, force=True)
+    return mol_tmp
+
+
 def _order_2h_signed_volume(
     mol: Chem.Mol,
     center_idx: int,
@@ -244,10 +253,7 @@ def _order_2h_sp3(
     Returns [pro-R_idx, pro-S_idx] or sorted if undetermined.
     """
     h1_idx, h2_idx = h_indices
-    mol_tmp = Chem.RWMol(Chem.Mol(mol))
-    Chem.AssignAtomChiralTagsFromStructure(mol_tmp)
-    mol_tmp.GetAtomWithIdx(h1_idx).SetIsotope(2)
-    Chem.AssignStereochemistry(mol_tmp, cleanIt=True, force=True)
+    mol_tmp = _deuterate_atom(mol, h1_idx)
     cip = mol_tmp.GetAtomWithIdx(center_idx).GetPropsAsDict().get('_CIPCode')
 
     if cip == 'R':
@@ -784,7 +790,8 @@ def _analyze_square_chirality(
     center_idx: int,
     z_from: int,
     z_to: int,
-    square_indices: list[int]
+    square_indices: list[int],
+    trans_of: dict[int, int],
 ) -> bool | None:
     """Analyze chirality of a 4-point square on the plane ⟂ the z axis.
 
@@ -792,7 +799,7 @@ def _analyze_square_chirality(
     square_indices lie approximately in the perpendicular plane.
 
     Steps:
-      1. Reject if the 4 CIP ranks form 2 groups of 2 (e.g., A₂B₂).
+      1. Reject if fewer than 3 distinct CIP ranks.
       2. Identify diagonal pairs (trans within the square).
          Reject if any diagonal has matching CIP ranks.
       3. Remove one atom (prefer duplicate rank, then lowest rank)
@@ -803,36 +810,22 @@ def _analyze_square_chirality(
     None if the square is symmetric (H equivalent).
     """
     conf = mol.GetConformer()
-    center_pos = np.array(conf.GetAtomPosition(center_idx))
 
     # Collect CIP ranks
     sq_ranks = {idx: _get_cip_rank(mol.GetAtomWithIdx(idx)) for idx in square_indices}
 
-    # --- Step 1: check for 2 groups of duplicates ---
-    from collections import Counter
+    # --- Step 1: require at least 3 distinct CIP ranks ---
     rank_values = list(sq_ranks.values())
-    rank_counts = Counter(rank_values)
-    pairs_of_two = sum(1 for c in rank_counts.values() if c >= 2)
-    if pairs_of_two >= 2:
+    if len(set(rank_values)) < 3:
         return None
 
-    # --- Step 2: check diagonals ---
-    # Find trans pairs among the 4 square atoms (these are the diagonals)
-    sq_vecs = {}
-    for idx in square_indices:
-        sq_vecs[idx] = np.array(conf.GetAtomPosition(idx)) - center_pos
-
+    # --- Step 2: check diagonals (trans pairs within the square) ---
+    sq_set = set(square_indices)
     diagonals = []
-    sq_list = list(square_indices)
-    for i in range(len(sq_list)):
-        for j in range(i + 1, len(sq_list)):
-            vi = sq_vecs[sq_list[i]]
-            vj = sq_vecs[sq_list[j]]
-            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
-            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
-            angle = np.arccos(cos_angle)
-            if angle > np.radians(150.0):
-                diagonals.append((sq_list[i], sq_list[j]))
+    for idx in square_indices:
+        partner = trans_of[idx]
+        if partner in sq_set and idx < partner:
+            diagonals.append((idx, partner))
 
     for d1, d2 in diagonals:
         if sq_ranks[d1] == sq_ranks[d2]:
@@ -848,11 +841,6 @@ def _analyze_square_chirality(
         if r not in seen_ranks and len(kept) < 3:
             kept.append(idx)
             seen_ranks.add(r)
-        elif len(kept) >= 3:
-            break
-
-    if len(kept) < 3:
-        return None
 
     # --- Step 4: triangle CW/CCW analysis ---
     # Axis direction: z_from → z_to
@@ -869,26 +857,21 @@ def _order_sp3d2_trans_2h(
     mol: Chem.Mol,
     center_idx: int,
     h_indices: list[int],
-    trans_pairs: list[tuple[int, int]],
+    trans_of: dict[int, int],
 ) -> list[int]:
     """Order 2 trans H on an octahedral center via square chirality.
 
     The 4 cis substituents form a square. Analyzes its chirality:
-    CW when looking from h1→h2 means h1 is at z⁺.
+    CCW when looking from h1→h2 means h1 is at z⁺.
     Returns [z⁺_idx, z⁻_idx] or sorted if equivalent.
     """
     h1_idx, h2_idx = h_indices
-    # Find the 4 cis substituents (all neighbors except h1 and h2)
     center_atom = mol.GetAtomWithIdx(center_idx)
     all_nbrs = {n.GetIdx() for n in center_atom.GetNeighbors()}
-    h_set = {h1_idx, h2_idx}
-    square_indices = list(all_nbrs - h_set)
-
-    if len(square_indices) != 4:
-        return sorted([h1_idx, h2_idx])
+    square_indices = list(all_nbrs - {h1_idx, h2_idx})
 
     ccw = _analyze_square_chirality(
-        mol, center_idx, h1_idx, h2_idx, square_indices
+        mol, center_idx, h1_idx, h2_idx, square_indices, trans_of
     )
 
     if ccw is None:
@@ -903,30 +886,17 @@ def _order_sp3d2_cis_2h(
     mol: Chem.Mol,
     center_idx: int,
     h_indices: list[int],
-    trans_pairs: list[tuple[int, int]],
+    trans_of: dict[int, int],
 ) -> list[int]:
     """Order 2 cis H on an octahedral center.
 
     Each H belongs to a different trans pair. Order by the CIP rank
     of their trans partners. If the trans partners have equal CIP rank,
-    analyze each H's cis square chirality.
+    analyze each H's cis square chirality (viewed along T→H direction).
     """
     h1_idx, h2_idx = h_indices
-    # Find trans partner for each H
-    t1 = None
-    t2 = None
-    for a, b in trans_pairs:
-        if a == h1_idx:
-            t1 = b
-        elif b == h1_idx:
-            t1 = a
-        if a == h2_idx:
-            t2 = b
-        elif b == h2_idx:
-            t2 = a
-
-    if t1 is None or t2 is None:
-        return sorted([h1_idx, h2_idx])
+    t1 = trans_of[h1_idx]
+    t2 = trans_of[h2_idx]
 
     r1 = _get_cip_rank(mol.GetAtomWithIdx(t1))
     r2 = _get_cip_rank(mol.GetAtomWithIdx(t2))
@@ -937,28 +907,163 @@ def _order_sp3d2_cis_2h(
             return [h1_idx, h2_idx]
         else:
             return [h2_idx, h1_idx]
+    else:
+        # T_a = T_b: use cis-square chirality (viewed along T→H)
+        center_atom = mol.GetAtomWithIdx(center_idx)
+        all_nbrs = {n.GetIdx() for n in center_atom.GetNeighbors()}
 
-    # T_a = T_b: use cis-square chirality
-    center_atom = mol.GetAtomWithIdx(center_idx)
-    all_nbrs = {n.GetIdx() for n in center_atom.GetNeighbors()}
+        # H_a's cis square: all neighbors except H_a and T_a
+        cis1 = list(all_nbrs - {h1_idx, t1})
+        # H_b's cis square: all neighbors except H_b and T_b
+        cis2 = list(all_nbrs - {h2_idx, t2})
 
-    # H_a's cis square: all neighbors except H_a and T_a
-    cis1 = list(all_nbrs - {h1_idx, t1})
-    # H_b's cis square: all neighbors except H_b and T_b
-    cis2 = list(all_nbrs - {h2_idx, t2})
+        ccw1 = _analyze_square_chirality(mol, center_idx, t1, h1_idx, cis1, trans_of)
+        ccw2 = _analyze_square_chirality(mol, center_idx, t2, h2_idx, cis2, trans_of)
 
-    ccw1 = _analyze_square_chirality(mol, center_idx, t1, h1_idx, cis1)
-    ccw2 = _analyze_square_chirality(mol, center_idx, t2, h2_idx, cis2)
+        # The H whose cis square is CCW from T→H comes first
+        if ccw1 is not None and ccw2 is not None:
+            if ccw1 != ccw2:
+                if ccw1:
+                    return [h1_idx, h2_idx]
+                else:
+                    return [h2_idx, h1_idx]
 
-    # The H whose cis square is CCW from T→H comes first
-    if ccw1 is not None and ccw2 is not None:
-        if ccw1 != ccw2:
-            if ccw1:  # h1's square CCW → h1 first
-                return [h1_idx, h2_idx]
-            else:
-                return [h2_idx, h1_idx]
+        return sorted([h1_idx, h2_idx])
 
-    return sorted([h1_idx, h2_idx])
+
+def _order_sp3d2_3h(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int],
+    trans_of: dict[int, int],
+    hh_pairs: list[tuple[int, int]],
+    hx_pairs: list[tuple[int, int]],
+) -> list[int]:
+    """Order 3 H on an SP3D2 center (fac or mer)."""
+    result: list[int] = []
+
+    if len(hx_pairs) == 3:
+        # fac: 3 H-X pairs
+        ranks: dict[int, list[int]] = {}
+        for _h, x in hx_pairs:
+            r = _get_cip_rank(mol.GetAtomWithIdx(x))
+            ranks.setdefault(r, []).append(_h)
+
+        if len(ranks) == 3:
+            # ABC: all different → order by trans CIP descending
+            for r in sorted(ranks, reverse=True):
+                result.append(ranks[r][0])
+        elif len(ranks) == 2:
+            # AAB: unique H (singleton rank) + 2H (duplicate rank) → 2H cis
+            unique_h = None
+            dup_hs = None
+            for hs in ranks.values():
+                if len(hs) == 1:
+                    unique_h = hs[0]
+                else:
+                    dup_hs = hs
+            result.append(unique_h)
+            result.extend(_order_sp3d2_cis_2h(
+                mol, center_idx, dup_hs, trans_of
+            ))
+        elif len(ranks) == 1:
+            # All equivalent → min-idx H first, deuterate, cis-2H
+            h_sorted = sorted(h_indices)
+            first_h = h_sorted[0]
+            h2, h3 = h_sorted[1], h_sorted[2]
+            result.append(first_h)
+            mol_tmp = _deuterate_atom(mol, first_h)
+            result.extend(_order_sp3d2_cis_2h(
+                mol_tmp, center_idx, [h2, h3], trans_of
+            ))
+
+    elif len(hh_pairs) == 1 and len(hx_pairs) == 1:
+        # mer: 1 H-H + 1 H-X. H-X H first, then H-H via trans_2h.
+        result.append(hx_pairs[0][0])
+        h_a, h_b = hh_pairs[0]
+        result.extend(_order_sp3d2_trans_2h(
+            mol, center_idx, [h_a, h_b], trans_of
+        ))
+
+    return result
+
+
+def _order_sp3d2_4h(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int],
+    trans_of: dict[int, int],
+    hh_pairs: list[tuple[int, int]],
+    hx_pairs: list[tuple[int, int]],
+    xx_pairs: list[tuple[int, int]],
+) -> list[int]:
+    """Order 4 H on an SP3D2 center (non-H trans or non-H cis)."""
+    result: list[int] = []
+
+    if len(hx_pairs) == 0 and len(hh_pairs) == 2:
+        # non-H trans: 2 H-H pairs + 1 non-H trans pair.
+        # Use trans non-H pair for z⁺ direction.
+        z_axis = _get_z_plus_vec(mol, xx_pairs[0])
+        result = _order_h_geometric(mol, center_idx, h_indices, z_axis=z_axis)
+
+    elif len(hx_pairs) == 2 and len(hh_pairs) == 1:
+        # non-H cis: 2 H-X + 1 H-H.
+        # H-X group: order by trans partner CIP rank descending.
+        ranks_hx = [_get_cip_rank(mol.GetAtomWithIdx(x)) for _, x in hx_pairs]
+        if len(set(ranks_hx)) >= 2:
+            hx_pairs.sort(key=lambda p: _get_cip_rank(mol.GetAtomWithIdx(p[1])),
+                          reverse=True)
+            for h, _ in hx_pairs:
+                result.append(h)
+        else:
+            # Equal rank → 2H equivalent: sorted
+            result.extend(sorted(h for h, _ in hx_pairs))
+        # H-H pair
+        for h_a, h_b in hh_pairs:
+            result.extend(_order_sp3d2_trans_2h(
+                mol, center_idx, [h_a, h_b], trans_of
+            ))
+
+    return result
+
+
+def _order_sp3d2_5h(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int],
+    hx_pairs: list[tuple[int, int]],
+) -> list[int]:
+    """Order 5 H on an SP3D2 center: 1 H-X + 2 H-H.
+
+    H-X H (ax) first, remaining 4H in equatorial plane via CCW geometric.
+    """
+    h_first, x = hx_pairs[0]
+    result = [h_first]
+    eq_h = [h for h in h_indices if h != h_first]
+    z_axis = _get_z_plus_vec(mol, (h_first, x))
+    result.extend(_order_h_geometric(mol, center_idx, eq_h, z_axis=z_axis))
+    return result
+
+
+def _order_sp3d2_6h(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int],
+    hh_pairs: list[tuple[int, int]],
+) -> list[int]:
+    """Order 6 H on an SP3D2 center: 3 H-H pairs.
+
+    Pick a trans pair as ax (min-idx), ax pair first,
+    remaining 4H via CCW geometric along ax direction.
+    """
+    sorted_hh = sorted(hh_pairs, key=lambda p: min(p))
+    ax_a, ax_b = sorted_hh[0]
+    # ax 2H equivalent: min idx first
+    result = [min(ax_a, ax_b), max(ax_a, ax_b)]
+    eq_h = [h for h in h_indices if h not in result]
+    z_axis = _get_z_plus_vec(mol, (ax_a, ax_b))
+    result.extend(_order_h_geometric(mol, center_idx, eq_h, z_axis=z_axis))
+    return result
 
 
 def _order_h_sp3d2(
@@ -975,36 +1080,23 @@ def _order_h_sp3d2(
       - 4H-5H:    classify non-H positions, delegate to sub-problems
       - 6H:       pick a trans pair as reference, order ax then eq
 
-    Equivalent 2H are returned directly (no geometric needed).
+    Equivalent 2H are returned sorted (no geometric needed).
     Geometric calls use explicit trans-pair z⁺ via _get_z_plus_vec when
     CIP ranks are equal.
     """
     n_h = len(h_indices)
-    if n_h <= 1:
-        return list(h_indices)
 
     trans_pairs = _find_sp3d2_trans_pairs(mol, center_idx)
     if len(trans_pairs) != 3:
         return _order_h_geometric(mol, center_idx, h_indices)
 
-    # --- 2H ---
-    if n_h == 2:
-        h1_idx, h2_idx = h_indices[0], h_indices[1]
-        is_trans = any(
-            (h1_idx in pair and h2_idx in pair) for pair in trans_pairs
-        )
-        if is_trans:
-            return _order_sp3d2_trans_2h(
-                mol, center_idx, h_indices, trans_pairs
-            )
-        else:
-            return _order_sp3d2_cis_2h(
-                mol, center_idx, h_indices, trans_pairs
-            )
+    trans_of = {}
+    for a, b in trans_pairs:
+        trans_of[a] = b
+        trans_of[b] = a
 
-    # --- 3H-6H: classify trans pairs ---
+    # Classify trans pairs by H content
     h_set = set(h_indices)
-
     hh_pairs: list[tuple[int, int]] = []
     hx_pairs: list[tuple[int, int]] = []  # (H, non-H)
     xx_pairs: list[tuple[int, int]] = []
@@ -1020,105 +1112,32 @@ def _order_h_sp3d2(
         else:
             xx_pairs.append((a, b))
 
-    result: list[int] = []
-
-    # --- 3H ---
-    if n_h == 3:
-        if len(hx_pairs) == 3:
-            # fac: 3 H-X pairs
-            ranks: dict[int, list[int]] = {}
-            for _h, x in hx_pairs:
-                r = _get_cip_rank(mol.GetAtomWithIdx(x))
-                ranks.setdefault(r, []).append(_h)
-
-            if len(ranks) == 3:
-                # ABC: all different → order by trans CIP descending
-                for r in sorted(ranks, reverse=True):
-                    result.append(ranks[r][0])
-            elif len(ranks) == 2:
-                # AAB: unique H (trans=B) + 2H (trans=A) → 2H cis
-                unique_rank = [r for r, hs in ranks.items()
-                               if len(hs) == 1][0]
-                dup_rank = [r for r, hs in ranks.items()
-                            if len(hs) == 2][0]
-                result.append(ranks[unique_rank][0])
-                result.extend(_order_sp3d2_cis_2h(
-                    mol, center_idx, ranks[dup_rank], trans_pairs
-                ))
-            else:
-                # AAA: all equivalent → min-idx H first, deuterate, cis-2H
-                h_sorted = sorted(h_indices)
-                first_h = h_sorted[0]
-                h2, h3 = h_sorted[1], h_sorted[2]
-                result.append(first_h)
-
-                mol_tmp = Chem.RWMol(Chem.Mol(mol))
-                Chem.AssignAtomChiralTagsFromStructure(mol_tmp)
-                mol_tmp.GetAtomWithIdx(first_h).SetIsotope(2)
-                Chem.AssignStereochemistry(mol_tmp, cleanIt=True, force=True)
-
-                result.extend(_order_sp3d2_cis_2h(
-                    mol_tmp, center_idx, [h2, h3], trans_pairs
-                ))
-        else:
-            # mer: 1 H-H + 1 H-X
-            if hx_pairs:
-                result.append(hx_pairs[0][0])
-            for h_a, h_b in hh_pairs:
-                result.extend(_order_sp3d2_trans_2h(
-                    mol, center_idx, [h_a, h_b], trans_pairs
-                ))
-
-    # --- 4H ---
+    if n_h == 2:
+        if len(hh_pairs) == 1 and len(xx_pairs) == 2:
+            return _order_sp3d2_trans_2h(
+                mol, center_idx, h_indices, trans_of
+            )
+        elif len(xx_pairs) == 1 and len(hx_pairs) == 2:
+            return _order_sp3d2_cis_2h(
+                mol, center_idx, h_indices, trans_of
+            )
+    elif n_h == 3:
+        return _order_sp3d2_3h(
+            mol, center_idx, h_indices, trans_of, hh_pairs, hx_pairs
+        )
     elif n_h == 4:
-        if len(hx_pairs) == 0:
-            # non-H trans: 2 H-H pairs + 1 non-H trans pair
-            # Use trans non-H pair for z⁺ direction
-            z_axis = _get_z_plus_vec(mol, xx_pairs[0])
-            result = _order_h_geometric(mol, center_idx, h_indices, z_axis=z_axis)
-        else:
-            # non-H cis: 2 H-X + 1 H-H
-            def _trans_rank(hx):
-                return _get_cip_rank(mol.GetAtomWithIdx(hx[1]))
-
-            ranks_hx = [_trans_rank(p) for p in hx_pairs]
-            if len(set(ranks_hx)) >= 2:
-                hx_pairs.sort(key=_trans_rank, reverse=True)
-                for h, _x in hx_pairs:
-                    result.append(h)
-            else:
-                # Equal rank → 2H equivalent: sorted for determinism
-                result.extend(sorted(h for h, _ in hx_pairs))
-            # H-H pair
-            for h_a, h_b in hh_pairs:
-                result.extend(_order_sp3d2_trans_2h(
-                    mol, center_idx, [h_a, h_b], trans_pairs
-                ))
-
-    # --- 5H ---
+        return _order_sp3d2_4h(
+            mol, center_idx, h_indices, trans_of,
+            hh_pairs, hx_pairs, xx_pairs
+        )
     elif n_h == 5:
-        # 1 H-X + 2 H-H. H-X H first (unique trans partner).
-        if hx_pairs:
-            h_first, x = hx_pairs[0]
-            result.append(h_first)
-            eq_h = [h for h in h_indices if h != h_first]
-            # Use trans H-X pair for z⁺ direction
-            z_axis = _get_z_plus_vec(mol, (h_first, x))
-            result.extend(_order_h_geometric(mol, center_idx, eq_h, z_axis=z_axis))
-
-    # --- 6H ---
-    else:
-        # 3 H-H pairs. Pick one trans pair as ax (min-idx).
-        sorted_hh = sorted(hh_pairs, key=lambda p: min(p))
-        ax_a, ax_b = sorted_hh[0]
-        # ax 2H equivalent: min idx first
-        result.extend([min(ax_a, ax_b), max(ax_a, ax_b)])
-        eq_h = [h for h in h_indices if h not in result]
-        # Use ax trans pair for z⁺ direction
-        z_axis = _get_z_plus_vec(mol, (ax_a, ax_b))
-        result.extend(_order_h_geometric(mol, center_idx, eq_h, z_axis=z_axis))
-
-    return result
+        return _order_sp3d2_5h(
+            mol, center_idx, h_indices, hx_pairs
+        )
+    elif n_h == 6:
+        return _order_sp3d2_6h(
+            mol, center_idx, h_indices, hh_pairs
+        )
 
 
 def _order_h_on_heavy_atom(
