@@ -20,9 +20,9 @@
 
 2H 的区分通过两种互补方法：
 
-1. **CIP 氘代法**（`_try_order_2h_sp3`）：将 h1 替换为 D（`SetIsotope(2)`），RDKit `AssignStereochemistry` 重新分配中心手性。若得到 R → h1 是 pro-R；S → h2 是 pro-R。
+1. **CIP 氘代法**（`_order_2h_sp3`）：将 h1 替换为 D（`SetIsotope(2)`），RDKit `AssignStereochemistry` 重新分配中心手性。若得到 R → h1 是 pro-R；S → h2 是 pro-R。
 
-2. **有向体积法**（`_try_order_2h_signed_volume`）：RDKit 无法为某些中心分配 `_CIPCode` 时（P、S、As 等非碳手性中心或 3 配位锥形中心），直接用几何有向体积（四面体四个顶点按 CIP 优先序排列后计算 signed volume）判定 R/S。
+2. **有向体积法**（`_order_2h_signed_volume`）：RDKit 无法为某些中心分配 `_CIPCode` 时（P、S、As 等非碳手性中心或 3 配位锥形中心），直接用几何有向体积（四面体四个顶点按 CIP 优先序排列后计算 signed volume）判定 R/S。
 
 ### 几何排列
 
@@ -38,7 +38,7 @@
 
 ## 2H
 
-### CIP 氘代法 (`_try_order_2h_sp3`)
+### CIP 氘代法 (`_order_2h_sp3`)
 
 ```text
 原始分子:  C(H_a)(H_b)(R₁)(R₂)
@@ -49,7 +49,7 @@
 
 RDKit `AssignStereochemistry` 能为大多数碳中心正确分配 R/S，但对 P、S、As 等非碳中心可能失败（`_CIPCode` 缺失），此时进入有向体积 fallback。
 
-### 有向体积 fallback (`_try_order_2h_signed_volume`)
+### 有向体积 fallback (`_order_2h_signed_volume`)
 
 RDKit 无法分配的 `_CIPCode` 时，手动构建四面体四顶点按 CIP 优先序（CIP desc）排列，计算有向体积：
 
@@ -123,7 +123,7 @@ $$
 
 ### 3 配位孤对电子推断失败
 
-`_infer_lone_pair_position` 在键向量和 ≈ 0（平面构型）时返回 None → `_try_order_2h_signed_volume` 返回 sorted。
+`_infer_lone_pair_position` 在键向量和 ≈ 0（平面构型）时返回 None → `_order_2h_signed_volume` 返回 sorted。
 
 ### 有向体积 ≈ 0
 
@@ -131,7 +131,7 @@ $$
 
 ### 非 3/4 配位
 
-`_try_order_2h_signed_volume` 要求 `n_explicit` 为 3 或 4，否则直接返回 sorted。
+`_order_2h_signed_volume` 要求 `n_explicit` 为 3 或 4，否则直接返回 sorted。
 
 ---
 
@@ -142,11 +142,11 @@ _order_h_sp3:
   n_H ≤ 1 → 直接返回
 
   n_H == 2:
-    _try_order_2h_sp3:
+    _order_2h_sp3:
       └─ 氘代 h1 → RDKit AssignStereochemistry
          ├─ _CIPCode = R → [h1, h2]  (h1 = pro-R)
          ├─ _CIPCode = S → [h2, h1]  (h2 = pro-R)
-         └─ 无 _CIPCode → _try_order_2h_signed_volume:
+         └─ 无 _CIPCode → _order_2h_signed_volume:
               ├─ 4 配位: 非 H（CIP desc）> D(h1) > H(h2)
               ├─ 3 配位: 非 H > D(h1) > H(h2) > 孤对电子
               ├─ V < 0 → [h1, h2]  (R)

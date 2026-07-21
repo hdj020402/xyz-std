@@ -148,7 +148,7 @@ def _signed_tetrahedron_volume(
     return float(np.dot(a_rel, np.cross(b_rel, c_rel)))
 
 
-def _try_order_2h_signed_volume(
+def _order_2h_signed_volume(
     mol: Chem.Mol,
     center_idx: int,
     h1_idx: int,
@@ -202,7 +202,7 @@ def _try_order_2h_signed_volume(
         return sorted([h1_idx, h2_idx])
 
 
-def _try_order_2h_sp3(
+def _order_2h_sp3(
     mol: Chem.Mol,
     center_idx: int,
     h1_idx: int,
@@ -228,7 +228,7 @@ def _try_order_2h_sp3(
 
     # RDKit cannot assign CIP (non-carbon centers: P, S, As, etc.)
     # Fall back to manual signed-volume determination
-    return _try_order_2h_signed_volume(mol, center_idx, h1_idx, h2_idx)
+    return _order_2h_signed_volume(mol, center_idx, h1_idx, h2_idx)
 
 
 def _walk_allene_far_end(
@@ -277,7 +277,7 @@ def _get_cip_rank(atom: Chem.Atom) -> int:
     return int(props['_CIPRank'])
 
 
-def _try_order_2h_allene(
+def _order_2h_allene(
     mol: Chem.Mol,
     center_idx: int,
     partner_idx: int,
@@ -358,7 +358,7 @@ def _try_order_2h_allene(
             return [h2_idx, h1_idx]  # h2 is pro-Z
 
 
-def _try_order_2h_sp2(
+def _order_2h_sp2(
     mol: Chem.Mol,
     center_idx: int,
     partner_idx: int,
@@ -378,7 +378,7 @@ def _try_order_2h_sp2(
 
     # Allene/cumulene: partner is sp → axial chirality ordering
     if partner_atom.GetHybridization() == Chem.HybridizationType.SP:
-        return _try_order_2h_allene(mol, center_idx, partner_idx, h1_idx, h2_idx)
+        return _order_2h_allene(mol, center_idx, partner_idx, h1_idx, h2_idx)
 
     # Normal sp2: partner's directly-bonded substituents
     partner_subs = [
@@ -503,7 +503,7 @@ def _order_h_sp2(
         for bond in center_atom.GetBonds():
             if bond.GetBondTypeAsDouble() == 2.0:
                 partner_idx = bond.GetOtherAtomIdx(center_idx)
-                return _try_order_2h_sp2(mol, center_idx, partner_idx, h1_idx, h2_idx)
+                return _order_2h_sp2(mol, center_idx, partner_idx, h1_idx, h2_idx)
         # No double bond found: sorted for determinism
         return sorted(h_indices)
     return _order_h_geometric(mol, center_idx, h_indices)
@@ -517,7 +517,7 @@ def _order_h_sp3(
     """Order H on an sp3 center: CIP pro-R/S (deuterium -> signed volume)."""
     if len(h_indices) == 2:
         h1_idx, h2_idx = h_indices
-        return _try_order_2h_sp3(mol, center_idx, h1_idx, h2_idx)
+        return _order_2h_sp3(mol, center_idx, h1_idx, h2_idx)
     return _order_h_geometric(mol, center_idx, h_indices)
 
 
