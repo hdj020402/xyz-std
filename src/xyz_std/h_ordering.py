@@ -221,7 +221,7 @@ def _order_2h_signed_volume(
     if n_explicit == 4:
         non_h_ranks = [_get_cip_rank(n) for n in non_h]
         if len(set(non_h_ranks)) == 1:
-            return sorted([h1_idx, h2_idx])  # H equivalent
+            return sorted(h_indices)  # H equivalent
 
         vol = _signed_tetrahedron_volume(
             vecs[non_h[0].GetIdx()], vecs[non_h[1].GetIdx()],
@@ -237,7 +237,7 @@ def _order_2h_signed_volume(
         return [h1_idx, h2_idx] if vol < 0 else [h2_idx, h1_idx]
 
     else:
-        return sorted([h1_idx, h2_idx])
+        return sorted(h_indices)
 
 
 def _order_2h_sp3(
@@ -324,7 +324,7 @@ def _order_2h_cumulene(
     h1_idx, h2_idx = h_indices
     far_info = _walk_cumulene_far_end(mol, center_idx, partner_idx)
     if far_info is None:
-        return sorted([h1_idx, h2_idx])
+        return sorted(h_indices)
     far_idx, prev_idx, sp_count = far_info
 
     far_subs = [
@@ -332,11 +332,11 @@ def _order_2h_cumulene(
         if n.GetIdx() != prev_idx
     ]
     if not far_subs:
-        return sorted([h1_idx, h2_idx])
+        return sorted(h_indices)
 
     ranks = [_get_cip_rank(n) for n in far_subs]
     if len(far_subs) > 1 and len(set(ranks)) == 1:
-        return sorted([h1_idx, h2_idx])  # Equivalent substituents → H are equivalent
+        return sorted(h_indices)  # Equivalent substituents → H are equivalent
 
     far_c = max(far_subs, key=lambda n: _get_cip_rank(n))
 
@@ -404,11 +404,11 @@ def _order_2h_sp2(
         if n.GetIdx() != center_idx
     ]
     if not partner_subs:
-        return sorted([h1_idx, h2_idx])
+        return sorted(h_indices)
 
     ranks = [_get_cip_rank(n) for n in partner_subs]
     if len(partner_subs) > 1 and len(set(ranks)) == 1:
-        return sorted([h1_idx, h2_idx])  # All substituents equivalent -> H are truly equivalent
+        return sorted(h_indices)  # All substituents equivalent -> H are truly equivalent
 
     ref_idx = max(partner_subs, key=lambda n: _get_cip_rank(n)).GetIdx()
     conf = mol.GetConformer()
@@ -574,7 +574,7 @@ def _order_sp3d_axial_2h(
     # Check equivalence: need 3 distinct CIP ranks among eq substituents
     eq_ranks = [_get_cip_rank(mol.GetAtomWithIdx(i)) for i in eq_indices]
     if len(set(eq_ranks)) < len(eq_indices):
-        return sorted([h1_idx, h2_idx])  # duplicate ranks → eq plane symmetric → H equivalent
+        return sorted(h_indices)  # duplicate ranks → eq plane symmetric → H equivalent
 
     # Sort eq by CIP rank descending
     eq_sorted = sorted(eq_indices, key=lambda i: -_get_cip_rank(mol.GetAtomWithIdx(i)))
@@ -616,7 +616,7 @@ def _order_sp3d_equatorial_2h(
     # Check equivalence: need distinct CIP ranks among axial substituents
     ax_ranks = [_get_cip_rank(mol.GetAtomWithIdx(i)) for i in axial_indices]
     if len(set(ax_ranks)) < 2:
-        return sorted([h1_idx, h2_idx])  # equal ranks → no defined z⁺ → H equivalent
+        return sorted(h_indices)  # equal ranks → no defined z⁺ → H equivalent
 
     # z_axis: ax_low → ax_high (z⁺ direction)
     ax_sorted = sorted(axial_indices, key=lambda i: -_get_cip_rank(mol.GetAtomWithIdx(i)))
@@ -875,7 +875,7 @@ def _order_sp3d2_trans_2h(
     )
 
     if ccw is None:
-        return sorted([h1_idx, h2_idx])
+        return sorted(h_indices)
     elif ccw:
         return [h1_idx, h2_idx]  # CCW: h1 at z⁺
     else:
@@ -928,7 +928,7 @@ def _order_sp3d2_cis_2h(
                 else:
                     return [h2_idx, h1_idx]
 
-        return sorted([h1_idx, h2_idx])
+        return sorted(h_indices)
 
 
 def _order_sp3d2_3h(

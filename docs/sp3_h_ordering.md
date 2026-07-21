@@ -4,7 +4,7 @@
 
 以下原则来自 `h_geometric_ordering.md` 的系统分析，适用于所有杂化类型（包括 SP3）：
 
-1. **等价 2H 不需要 geometric**：化学方法返回 `sorted([h1, h2])`（等效于 flat ordered）。取代后只剩 1H，不存在 prochiral pair。
+1. **等价 2H 不需要 geometric**：化学方法返回 `sorted(h_indices)`（等效于 flat ordered）。取代后只剩 1H，不存在 prochiral pair。
 
 2. **`len(h_indices) <= 1` 在调用方处理**：单 H 不应进入 geometric 排序函数。`_order_h_sp3` 入口直接返回，`_order_h_geometric` 假设输入 ≥ 2。
 
@@ -151,7 +151,7 @@ _order_h_sp3:
               ├─ 3 配位: 非 H > D(h1) > H(h2) > 孤对电子
               ├─ V < 0 → [h1, h2]  (R)
               ├─ V > 0 → [h2, h1]  (S)
-              └─ 等价/退化 → sorted([h1, h2])
+              └─ 等价/退化 → sorted(h_indices)
 
   n_H ≥ 3:
     _order_h_geometric:

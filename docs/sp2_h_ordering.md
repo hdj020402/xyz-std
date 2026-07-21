@@ -4,7 +4,7 @@
 
 以下原则来自 `h_geometric_ordering.md` 的系统分析，适用于所有杂化类型（包括 SP2）：
 
-1. **等价 2H 不需要 geometric**：化学方法返回 `sorted([h1, h2])`（等效于 flat ordered）。取代后只剩 1H，不存在 prochiral pair。
+1. **等价 2H 不需要 geometric**：化学方法返回 `sorted(h_indices)`（等效于 flat ordered）。取代后只剩 1H，不存在 prochiral pair。
 
 2. **`len(h_indices) <= 1` 在调用方处理**：单 H 不应进入 geometric 排序函数。`_order_h_on_heavy_atom` 入口直接返回，`_order_h_geometric` 假设输入 ≥ 2。
 
@@ -55,7 +55,7 @@ partner 取代基（排除 center）= R₁, R₂
 返回: [pro-Z_idx, pro-E_idx]
 ```
 
-**等价判定**：partner 的所有取代基 CIP rank 全相同（`len(set(ranks)) == 1`）→ 2H 等价 → `sorted([h1, h2])`。
+**等价判定**：partner 的所有取代基 CIP rank 全相同（`len(set(ranks)) == 1`）→ 2H 等价 → `sorted(h_indices)`。
 
 例如：`H₂C=CH₂`（乙烯）partner 只有 H 作为取代基 → 等价；`R–CH=CH₂` partner 有 R 和 H → 可区分。
 
@@ -115,7 +115,7 @@ CIP 路径 H₁ → H₂ → far_c（远端最高 CIP 取代基）:
 
 ### 无双键：`sorted(h_indices)`
 
-sp2 无双键时（如碳正离子 R₂C⁺–CH₃），没有 partner 端提供二面角参考方向，2H 无法通过化学方法区分 → `sorted([h1, h2])`。
+sp2 无双键时（如碳正离子 R₂C⁺–CH₃），没有 partner 端提供二面角参考方向，2H 无法通过化学方法区分 → `sorted(h_indices)`。
 
 ### `_walk_cumulene_far_end` — 累积烯 Walk
 
@@ -153,7 +153,7 @@ sp2 多 H（如 BH₃ 有 3H）→ `_order_h_geometric`（自动选 z 轴 + CCW 
 - sp 碳沿双键的下一原子不唯一（分支）
 - 累积链中断
 
-返回 None 时 `_order_2h_cumulene` 直接 `sorted([h1, h2])`。
+返回 None 时 `_order_2h_cumulene` 直接 `sorted(h_indices)`。
 
 ### 远端无取代基或全等价
 

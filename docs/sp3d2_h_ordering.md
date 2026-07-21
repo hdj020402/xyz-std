@@ -4,7 +4,7 @@
 
 以下原则来自 `h_geometric_ordering.md` 的系统分析，适用于所有杂化类型（包括 SP3D2）：
 
-1. **等价 2H 不需要 geometric**：化学方法返回 `None` 意味着 2H 等价。取代后只剩 1H，不存在 prochiral pair，返回 `sorted([h1, h2])` 即可。
+1. **等价 2H 不需要 geometric**：化学方法返回 `None` 意味着 2H 等价。取代后只剩 1H，不存在 prochiral pair，返回 `sorted(h_indices)` 即可。
 
 2. **`len(h_indices) <= 1` 在调用方处理**：单 H 不应进入 geometric 排序函数。各分发函数入口检查，`_order_h_geometric` 假设输入 ≥ 2。
 
@@ -31,7 +31,7 @@
 
 ## 2H
 
-> **原则**：等价 2H（化学方法返回 None）不需要 geometric。取代后只剩 1H，不存在 prochiral pair，返回 `sorted([h1, h2])` 即可。详见 `h_geometric_ordering.md`。
+> **原则**：等价 2H（化学方法返回 None）不需要 geometric。取代后只剩 1H，不存在 prochiral pair，返回 `sorted(h_indices)` 即可。详见 `h_geometric_ordering.md`。
 
 ### 2H trans
 
