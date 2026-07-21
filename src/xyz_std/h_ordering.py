@@ -67,18 +67,14 @@ def _is_ccw(
 
 def _order_h_by_angle_projection(
     center_pos: np.ndarray,
-    ref_pos: np.ndarray,
+    z_axis: np.ndarray,
     h_pos_list: list[tuple[int, np.ndarray]]
 ) -> list[int]:
-    """
-    Order H atoms by CCW angle projection onto plane perpendicular to center->ref axis.
-
-    Creates an orthonormal basis on the perpendicular plane via Gram-Schmidt,
-    then sorts H atoms by their atan2 angle in that plane.
+    """Order H atoms by CCW angle projection onto plane ⟂ z_axis.
 
     Args:
         center_pos: Position of the center heavy atom
-        ref_pos: Position of a reference non-H neighbor (defines projection axis)
+        z_axis: Unit vector defining the projection axis
         h_pos_list: List of (h_index, h_position) tuples
 
     Returns:
@@ -86,12 +82,6 @@ def _order_h_by_angle_projection(
     """
     if len(h_pos_list) <= 1:
         return [idx for idx, _ in h_pos_list]
-
-    z_axis = ref_pos - center_pos
-    z_norm = np.linalg.norm(z_axis)
-    if z_norm < 1e-10:
-        return [idx for idx, _ in h_pos_list]
-    z_axis = z_axis / z_norm
 
     x_axis, y_axis = _build_perp_basis(z_axis)
 
@@ -107,29 +97,52 @@ def _order_h_by_angle_projection(
 def _infer_lone_pair_position(
     center_pos: np.ndarray,
     bond_vecs: list[np.ndarray]
-) -> np.ndarray | None:
+) -> np.ndarray:
     """Infer lone pair position for a pyramidal center.
 
-    For a tetrahedral center, the sum of all four bond vectors ≈ 0.
+    For a tetrahedral center, the sum of all four unit bond vectors ≈ 0.
     Given three explicit bond vectors, the lone pair direction is
-    approximately opposite to their sum.
+    approximately opposite to their sum (each bond equally weighted
+    by direction, not length).
 
     Args:
         center_pos: Position of the center atom
-        bond_vecs: List of vectors from center to each explicit neighbor
+        bond_vecs: Vectors from center to each explicit neighbor
 
     Returns:
-        Inferred lone pair position (at average bond length) or None if degenerate
+        Inferred lone pair position (at average bond length)
     """
     s = np.zeros(3)
+    bond_lens = []
     for v in bond_vecs:
-        s = s + v
+        bond_len = np.linalg.norm(v)
+        bond_lens.append(bond_len)
+        s = s + v / bond_len  # unit direction, equally weighted
     lp_dir = -s
-    norm = np.linalg.norm(lp_dir)
-    if norm < 1e-10:
-        return None
-    avg_bond_len = np.mean([np.linalg.norm(v) for v in bond_vecs])
-    return center_pos + lp_dir / norm * avg_bond_len
+    lp_dir = lp_dir / np.linalg.norm(lp_dir)
+    avg_bond_len = float(np.mean(bond_lens))
+    return center_pos + lp_dir * avg_bond_len
+
+
+def _signed_tetrahedron_volume(
+    a: np.ndarray,
+    b: np.ndarray,
+    c: np.ndarray,
+    d: np.ndarray,
+) -> float:
+    """Signed volume of tetrahedron formed by 4 vertex vectors from center.
+
+    Vectors a > b > c > d in CIP priority order. d is conceptually behind
+    the plane of a, b, c (lowest priority).
+
+    Returns:
+        Negative → a,b,c left-handed → R
+        Positive → a,b,c right-handed → S
+    """
+    a_rel = a - d
+    b_rel = b - d
+    c_rel = c - d
+    return float(np.dot(a_rel, np.cross(b_rel, c_rel)))
 
 
 def _try_order_2h_signed_volume(
@@ -147,11 +160,8 @@ def _try_order_2h_signed_volume(
     For 3-coordinate pyramidal centers (phosphines, sulfonium ions, etc.),
     infers the lone pair position as the lowest-priority substituent.
 
-    CIP priority: non-H substituents (by _CIPRank) > D(h1) > H(h2)
+    CIP priority: non-H substituents (by _CIPRank) > h1(D) > h2(H)
     [> lone_pair for 3-coordinate].
-
-    The signed volume sign determines R vs S for the deuterated center,
-    which maps directly to pro-R / pro-S for the original center.
 
     Returns [pro-R_idx, pro-S_idx] or sorted if undetermined.
     """
@@ -159,70 +169,34 @@ def _try_order_2h_signed_volume(
     center_pos = np.array(conf.GetAtomPosition(center_idx))
     center_atom = mol.GetAtomWithIdx(center_idx)
 
-    neighbors = list(center_atom.GetNeighbors())
-    h_set = {h1_idx, h2_idx}
-    non_h = [n for n in neighbors if n.GetIdx() not in h_set]
+    neighbors: list[Chem.Atom] = list(center_atom.GetNeighbors())
     n_explicit = len(neighbors)
 
-    if n_explicit not in (3, 4):
-        return sorted([h1_idx, h2_idx])
+    non_h = [n for n in neighbors if n.GetIdx() not in (h1_idx, h2_idx)]
+    non_h.sort(key=lambda n: -_get_cip_rank(n))
+    vecs = {n.GetIdx(): np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+            for n in neighbors}
 
-    # Check equivalence: if non-H substituents have the same CIP rank,
-    # the two H are truly equivalent → return sorted
-    if len(non_h) >= 2:
+    if n_explicit == 4:
         non_h_ranks = [_get_cip_rank(n) for n in non_h]
         if len(set(non_h_ranks)) == 1:
-            return sorted([h1_idx, h2_idx])
+            return sorted([h1_idx, h2_idx])  # H equivalent
 
-    # Collect bond vectors from center to each neighbor
-    vecs: dict[int, np.ndarray] = {}
-    for n in neighbors:
-        vecs[n.GetIdx()] = np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+        vol = _signed_tetrahedron_volume(
+            vecs[non_h[0].GetIdx()], vecs[non_h[1].GetIdx()],
+            vecs[h1_idx], vecs[h2_idx])
+        return [h1_idx, h2_idx] if vol < 0 else [h2_idx, h1_idx]
 
-    # Build priority order: non-H (by _CIPRank desc) > h1(D) > h2(H)
-    non_h_sorted = sorted(non_h, key=lambda n: -_get_cip_rank(n))
-    priority_atoms = non_h_sorted + [
-        mol.GetAtomWithIdx(h1_idx),
-        mol.GetAtomWithIdx(h2_idx),
-    ]
+    elif n_explicit == 3:
+        lp_pos = _infer_lone_pair_position(center_pos, list(vecs.values()))
 
-    # Set up four vectors a>b>c>d in CIP priority order
-    if n_explicit == 4:
-        if len(non_h_sorted) != 2:
-            return sorted([h1_idx, h2_idx])
-        a = vecs[priority_atoms[0].GetIdx()]
-        b = vecs[priority_atoms[1].GetIdx()]
-        c = vecs[priority_atoms[2].GetIdx()]  # h1 (D)
-        d = vecs[priority_atoms[3].GetIdx()]  # h2 (H)
-    else:  # n_explicit == 3
-        if len(non_h_sorted) != 1:
-            return sorted([h1_idx, h2_idx])
-        a = vecs[priority_atoms[0].GetIdx()]  # non-H
-        b = vecs[priority_atoms[1].GetIdx()]  # h1 (D)
-        c = vecs[priority_atoms[2].GetIdx()]  # h2 (H)
-        lp_pos = _infer_lone_pair_position(
-            center_pos, [vecs[n.GetIdx()] for n in neighbors]
-        )
-        if lp_pos is None:
-            return sorted([h1_idx, h2_idx])
-        d = lp_pos - center_pos  # lone pair (phantom, lowest priority)
+        vol = _signed_tetrahedron_volume(
+            vecs[non_h[0].GetIdx()], vecs[h1_idx],
+            vecs[h2_idx], lp_pos - center_pos)
+        return [h1_idx, h2_idx] if vol < 0 else [h2_idx, h1_idx]
 
-    # Signed volume: (a-d)·((b-d)×(c-d))
-    # Place lowest-priority substituent (d) conceptually behind the plane.
-    # Positive → a,b,c right-handed → CCW → S
-    # Negative → a,b,c left-handed  → CW  → R
-    a_rel = a - d
-    b_rel = b - d
-    c_rel = c - d
-    signed_vol = np.dot(a_rel, np.cross(b_rel, c_rel))
-
-    if abs(signed_vol) < 1e-10:
-        return sorted([h1_idx, h2_idx])  # planar, cannot determine handedness
-
-    if signed_vol < 0:
-        return [h1_idx, h2_idx]  # R → h1 is pro-R
     else:
-        return [h2_idx, h1_idx]  # S → h2 is pro-R
+        return sorted([h1_idx, h2_idx])
 
 
 def _try_order_2h_sp3(
@@ -474,8 +448,10 @@ def _order_h_geometric(
         center_idx: Index of the heavy atom center
         h_indices: Indices of H atoms attached to center (length >= 2)
         z_axis: Optional explicit z-axis unit vector (from trans/axial pair).
-                If None, auto-selects: non-H neighbor (sp3 Case B)
-                or min-index H placed first (sp3 Case A, e.g. CH4).
+                If None, auto-selects a reference direction:
+                  - non-H neighbor (R-CH3, Case B)
+                  - lone pair (NH3/PH3, 3H + lp)
+                  - min-index H placed first (CH4, Case A)
 
     Returns:
         Deterministically ordered list of H atom indices
@@ -483,31 +459,33 @@ def _order_h_geometric(
     conf = mol.GetConformer()
     center_pos = np.array(conf.GetAtomPosition(center_idx))
 
+    prefix: list[int] = []
     if z_axis is not None:
-        # Explicit z-axis from trans/axial pair: project all H
-        ref_pos = center_pos + z_axis
-        h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_indices]
-        return _order_h_by_angle_projection(center_pos, ref_pos, h_pos_list)
+        h_list = h_indices
+    else:
+        center_atom = mol.GetAtomWithIdx(center_idx)
+        all_nbrs = list(center_atom.GetNeighbors())
+        non_h_nbrs = [n for n in all_nbrs if n.GetAtomicNum() != 1]
 
-    center_atom = mol.GetAtomWithIdx(center_idx)
-    non_h_neighbors = [n for n in center_atom.GetNeighbors() if n.GetAtomicNum() != 1]
+        if non_h_nbrs:
+            ref_vec = np.array(conf.GetAtomPosition(non_h_nbrs[0].GetIdx())) - center_pos
+            z_axis = ref_vec / np.linalg.norm(ref_vec)
+            h_list = h_indices
+        elif len(all_nbrs) == 3:
+            bond_vecs = [np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+                         for n in all_nbrs]
+            lp_vec = _infer_lone_pair_position(center_pos, bond_vecs) - center_pos
+            z_axis = lp_vec / np.linalg.norm(lp_vec)
+            h_list = h_indices
+        else:
+            ref_h = min(h_indices)
+            prefix = [ref_h]
+            h_list = [h for h in h_indices if h != ref_h]
+            ref_vec = np.array(conf.GetAtomPosition(ref_h)) - center_pos
+            z_axis = ref_vec / np.linalg.norm(ref_vec)
 
-    if non_h_neighbors:
-        # Case B (sp3, e.g. R-CH3): single non-H neighbor as ref,
-        # all H projected equally.
-        ref_pos = np.array(conf.GetAtomPosition(non_h_neighbors[0].GetIdx()))
-        h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_indices]
-        return _order_h_by_angle_projection(center_pos, ref_pos, h_pos_list)
-
-    # Case A (all H, e.g. CH4): pick min-index H as reference axis,
-    # place it first, then CCW-order the rest.
-    ref_h = min(h_indices)
-    remaining = [h for h in h_indices if h != ref_h]
-    if not remaining:
-        return [ref_h]
-    ref_pos = np.array(conf.GetAtomPosition(ref_h))
-    h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in remaining]
-    return [ref_h] + _order_h_by_angle_projection(center_pos, ref_pos, h_pos_list)
+    h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_list]
+    return prefix + _order_h_by_angle_projection(center_pos, z_axis, h_pos_list)
 
 
 def _order_h_sp2(

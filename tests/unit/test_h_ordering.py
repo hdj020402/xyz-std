@@ -758,19 +758,6 @@ class TestInferLonePairPosition:
         # lp_dir and -s should point in same direction (positive dot product)
         assert np.dot(lp_dir, -s) > 0
 
-    def test_planar_returns_none(self):
-        """Planar (trigonal) arrangement should return None."""
-        center = np.array([0.0, 0.0, 0.0])
-        # Three coplanar bonds at 120° — sum ≈ 0
-        vecs = [
-            np.array([1.0, 0.0, 0.0]),
-            np.array([-0.5, 0.866, 0.0]),
-            np.array([-0.5, -0.866, 0.0]),
-        ]
-        lp = _infer_lone_pair_position(center, vecs)
-        assert lp is None
-
-
 class TestTryOrder2hSignedVolume:
     """Tests for _try_order_2h_signed_volume (non-carbon prochiral centers)."""
 
