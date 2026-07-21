@@ -61,7 +61,7 @@ partner 取代基（排除 center）= R₁, R₂
 
 ### 有双键：累积烯 (`_order_2h_cumulene`)
 
-partner 为 sp 时触发。沿累积双键 walk 到远端终点（`_walk_allene_far_end`），根据路径中 sp 碳数量奇偶选择方法：
+partner 为 sp 时触发。沿累积双键 walk 到远端终点（`_walk_cumulene_far_end`），根据路径中 sp 碳数量奇偶选择方法：
 
 ```text
 center=C=...=C=far_end
@@ -70,22 +70,32 @@ center=C=...=C=far_end
 
 #### 奇数 sp（轴向手性，Rₐ/Sₐ）
 
-以丙二烯（allene，`sp_count = 1`）为代表。两端 =CH₂ 平面互相垂直，通过有向角判断手性：
+以丙二烯（allene，`sp_count = 1`）为代表。两端 =CH₂ 平面互相垂直，存在轴手性。
+
+**CIP 判定规则**（IUPAC）：沿轴方向从近端看向远端，路径为**近端大基团 → 近端小基团 → 远端大基团**（不看远端小基团）。若为顺时针 → Rₐ，逆时针 → Sₐ。
 
 ```text
-        H₁
+        H₁ (近端大基团, pro-Rₐ 候选)
        ╱
   C=C=C=C(far)
        ╲
-        H₂
+        H₂ (近端小基团, pro-Sₐ 候选)
 
-沿 C=C=C 轴方向看 ⟂轴 平面投影：
-  H₁ → far_c（远端最高 CIP 取代基）的有向角：
-    CW（负角）→ H₁ = pro-Rₐ → [H₁, H₂]
-    CCW（正角）→ H₂ = pro-Rₐ → [H₂, H₁]
+沿 C=C=C 轴方向观察 ⟂轴 平面投影，
+CIP 路径 H₁ → H₂ → far_c（远端最高 CIP 取代基）:
+    CW  → Rₐ → H₁ = pro-Rₐ → [H₁, H₂]
+    CCW → Sₐ → H₂ = pro-Rₐ → [H₂, H₁]
 ```
 
-数学：`cross = axis · (h1_proj × far_proj)`，`angle = atan2(cross, h1_proj · far_proj)`。`angle < 0` → CW → H₁ 为 pro-Rₐ。
+**代码实现**：用 `_signed_angle_between(axis, H1, far_c)` 计算 H1 到 far_c 的有向角。由于 H1 和 H2 在投影面互为对跖点（约 180°），H1→far_c 两点的 CW/CCW 方向与 CIP 三点路径 H1→H2→far_c 的 CW/CCW 方向**恰好相反**：
+
+```text
+  signed_angle(H1, far_c) < 0 (CW)
+    → CIP 路径 H1→H2→far_c 为 CCW → Sₐ → H₂ = pro-Rₐ
+
+  signed_angle(H1, far_c) > 0 (CCW)
+    → CIP 路径 H1→H2→far_c 为 CW → Rₐ → H₁ = pro-Rₐ
+```
 
 #### 偶数 sp（共面，Z/E）
 
@@ -101,13 +111,13 @@ center=C=...=C=far_end
 
 - 远端无取代基（`far_subs` 为空）→ sorted
 - 远端所有取代基 CIP rank 全相同 → sorted
-- `_walk_allene_far_end` 失败（walk 中途异常）→ sorted
+- `_walk_cumulene_far_end` 失败（walk 中途异常）→ sorted
 
 ### 无双键：`sorted(h_indices)`
 
 sp2 无双键时（如碳正离子 R₂C⁺–CH₃），没有 partner 端提供二面角参考方向，2H 无法通过化学方法区分 → `sorted([h1, h2])`。
 
-### `_walk_allene_far_end` — 累积烯 Walk
+### `_walk_cumulene_far_end` — 累积烯 Walk
 
 ```text
 从 partner_idx 出发，沿双键 chain 前进：
@@ -136,7 +146,7 @@ sp2 多 H（如 BH₃ 有 3H）→ `_order_h_geometric`（自动选 z 轴 + CCW 
 
 ## 异常处理
 
-### `_walk_allene_far_end` 失败
+### `_walk_cumulene_far_end` 失败
 
 在 walk 过程中遇到以下情况返回 None：
 
@@ -165,12 +175,14 @@ _order_h_sp2(mol, center_idx, h_indices):
       有 → _order_2h_sp2:
               partner 是 sp?
                 ├─ 是 → _order_2h_cumulene:
-                │         _walk_allene_far_end:
+                │         _walk_cumulene_far_end:
                 │           失败 → sorted
                 │           远端无取代基 / 全等价 → sorted
                 │           sp_count 奇数（轴向手性）:
-                │             signed angle CW → [h1, h2]  (h1 = pro-Rₐ)
-                │             signed angle CCW → [h2, h1]  (h2 = pro-Rₐ)
+                │             signed_angle(H1, far_c) < 0 (CW)
+                │               → CIP 三点路径 CCW → Sₐ → [h2, h1] (h2=pro-Rₐ)
+                │             signed_angle(H1, far_c) > 0 (CCW)
+                │               → CIP 三点路径 CW → Rₐ → [h1, h2] (h1=pro-Rₐ)
                 │           sp_count 偶数（共面）:
                 │             dihedral |···| < 90° → [h1, h2]  (h1 = pro-Z)
                 │             |dihedral| ≥ 90° → [h2, h1]  (h2 = pro-Z)

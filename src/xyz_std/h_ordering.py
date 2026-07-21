@@ -260,7 +260,7 @@ def _order_2h_sp3(
     return _order_2h_signed_volume(mol, center_idx, h_indices)
 
 
-def _walk_allene_far_end(
+def _walk_cumulene_far_end(
     mol: Chem.Mol,
     center_idx: int,
     partner_idx: int
@@ -305,7 +305,7 @@ def _order_2h_cumulene(
     Odd sp count (axial chirality, e.g. propadiene):
       Projects H1, H2 and the far-end highest-CIP substituent onto a plane
       perpendicular to the C=C=C axis, then computes signed angles.
-      CW arc from a to c → R_a, CCW → S_a.
+      CW arc → S_a (H2 = pro-R_a), CCW → R_a (H1 = pro-R_a).
       Returns [pro-R_a_idx, pro-S_a_idx].
 
     Even sp count (coplanar, e.g. butatriene):
@@ -316,7 +316,7 @@ def _order_2h_cumulene(
     Returns sorted if H are equivalent.
     """
     h1_idx, h2_idx = h_indices
-    far_info = _walk_allene_far_end(mol, center_idx, partner_idx)
+    far_info = _walk_cumulene_far_end(mol, center_idx, partner_idx)
     if far_info is None:
         return sorted([h1_idx, h2_idx])
     far_idx, prev_idx, sp_count = far_info
@@ -349,11 +349,16 @@ def _order_2h_cumulene(
             axis, h1_pos - center_pos, far_c_pos - center_pos
         )
 
-        # CW (negative) → R_a, CCW (positive) → S_a
+        # CIP (IUPAC): view along axis near→far, trace
+        #   near-big → near-small → far-big  (skip far-small)
+        #   CW = R_a, CCW = S_a
+        #
+        # signed_angle(H1, far_c) is OPPOSITE to the three-point CIP path
+        # because H1 and H2 are ~180° apart in the projection plane.
         if angle < 0:
-            return [h1_idx, h2_idx]  # h1 is pro-R_a
-        else:
             return [h2_idx, h1_idx]  # h2 is pro-R_a
+        else:
+            return [h1_idx, h2_idx]  # h1 is pro-R_a
     else:
         # Even: coplanar (pro-Z / pro-E via dihedral)
         dihedral = rdMolTransforms.GetDihedralDeg(
