@@ -20,7 +20,7 @@ from xyz_std.h_ordering import (
     _order_sp3d2_cis_2h,
     _order_2h_sp3,
     _order_2h_sp2,
-    _order_2h_allene,
+    _order_2h_cumulene,
     _order_2h_signed_volume,
     _infer_lone_pair_position,
     _get_z_plus_vec,
@@ -1098,6 +1098,27 @@ class TestHybridizationDispatch:
                     assert set(result) == set(h_nbrs)
                     return
         pytest.fail("No sp2 =CH2 found")
+
+    def test_sp2_bh3_uses_plane_normal(self):
+        """BH3: sp2 center with 3 H and no double bond → geometric via plane normal.
+
+        The plane normal (cross of two B-H bond vectors) must be used as z_axis
+        rather than inferring a non-existent lone pair."""
+        mol = _make_mol_with_3d("B")
+        b_idx = 0
+        h_idxs = [n.GetIdx() for n in mol.GetAtomWithIdx(b_idx).GetNeighbors()
+                   if n.GetAtomicNum() == 1]
+
+        assert len(h_idxs) == 3
+        assert mol.GetAtomWithIdx(b_idx).GetHybridization() == Chem.HybridizationType.SP2
+
+        result = _order_h_sp2(mol, b_idx, h_idxs)
+        assert len(result) == 3
+        assert set(result) == set(h_idxs)
+
+        # Determinism: same input → same output
+        r2 = _order_h_sp2(mol, b_idx, h_idxs)
+        assert result == r2
 
     def test_top_level_dispatches_correctly(self):
         """_order_h_on_heavy_atom should route SP2/SP3/SP3D correctly."""

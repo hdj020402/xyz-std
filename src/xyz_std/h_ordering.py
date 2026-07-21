@@ -3,6 +3,18 @@ from rdkit import Chem
 from rdkit.Chem import rdMolTransforms
 
 
+def _get_cip_rank(atom: Chem.Atom) -> int:
+    """Get _CIPRank from an atom, with a clear error if missing."""
+    props = atom.GetPropsAsDict()
+    if '_CIPRank' not in props:
+        raise RuntimeError(
+            f"Atom {atom.GetIdx()} ({atom.GetSymbol()}) missing _CIPRank property. "
+            f"Ensure Chem.AssignStereochemistry(mol, cleanIt=True, force=True) "
+            f"has been called before H ordering."
+        )
+    return int(props['_CIPRank'])
+
+
 def _build_perp_basis(
     z_axis: np.ndarray,
     x_direction: np.ndarray | None = None,
@@ -33,6 +45,23 @@ def _projected_angle(
     """atan2 CCW angle of vector v projected onto plane perpendicular to z_axis."""
     v_proj = v - np.dot(v, z_axis) * z_axis
     return float(np.arctan2(np.dot(v_proj, y_axis), np.dot(v_proj, x_axis)))
+
+
+def _signed_angle_between(
+    axis: np.ndarray,
+    v1: np.ndarray,
+    v2: np.ndarray,
+) -> float:
+    """Signed angle from v1 to v2 projected onto plane ⟂ axis.
+
+    Uses right-hand rule around axis: positive = CCW, negative = CW.
+    Returns angle in (-π, π].
+    """
+    v1_proj = v1 - np.dot(v1, axis) * axis
+    v2_proj = v2 - np.dot(v2, axis) * axis
+    cross = np.dot(axis, np.cross(v1_proj, v2_proj))
+    dot = np.dot(v1_proj, v2_proj)
+    return float(np.arctan2(cross, dot))
 
 
 def _is_ccw(
@@ -265,25 +294,13 @@ def _walk_allene_far_end(
     return (cursor_idx, prev_idx, sp_count)
 
 
-def _get_cip_rank(atom: Chem.Atom) -> int:
-    """Get _CIPRank from an atom, with a clear error if missing."""
-    props = atom.GetPropsAsDict()
-    if '_CIPRank' not in props:
-        raise RuntimeError(
-            f"Atom {atom.GetIdx()} ({atom.GetSymbol()}) missing _CIPRank property. "
-            f"Ensure Chem.AssignStereochemistry(mol, cleanIt=True, force=True) "
-            f"has been called before H ordering."
-        )
-    return int(props['_CIPRank'])
-
-
-def _order_2h_allene(
+def _order_2h_cumulene(
     mol: Chem.Mol,
     center_idx: int,
     partner_idx: int,
     h_indices: list[int],
 ) -> list[int]:
-    """Order 2 H on terminal =CH2 of allene/cumulene.
+    """Order 2 H on terminal =CH2 of cumulene (including allene).
 
     Odd sp count (axial chirality, e.g. propadiene):
       Projects H1, H2 and the far-end highest-CIP substituent onto a plane
@@ -321,26 +338,16 @@ def _order_2h_allene(
     center_pos = np.array(conf.GetAtomPosition(center_idx))
     partner_pos = np.array(conf.GetAtomPosition(partner_idx))
     h1_pos = np.array(conf.GetAtomPosition(h1_idx))
-    h2_pos = np.array(conf.GetAtomPosition(h2_idx))
     far_c_pos = np.array(conf.GetAtomPosition(far_c.GetIdx()))
 
     if sp_count % 2 == 1:
         # Odd: axial chirality (planes perpendicular)
         axis = partner_pos - center_pos
-        axis_norm = np.linalg.norm(axis)
-        if axis_norm < 1e-10:
-            return sorted([h1_idx, h2_idx])
-        axis = axis / axis_norm
+        axis = axis / np.linalg.norm(axis)
 
-        def _project(vec):
-            return vec - np.dot(vec, axis) * axis
-
-        h1_proj = _project(h1_pos - center_pos)
-        far_proj = _project(far_c_pos - center_pos)
-
-        # Signed angle from H1 to far-c
-        cross = np.dot(axis, np.cross(h1_proj, far_proj))
-        angle = np.arctan2(cross, np.dot(h1_proj, far_proj))
+        angle = _signed_angle_between(
+            axis, h1_pos - center_pos, far_c_pos - center_pos
+        )
 
         # CW (negative) → R_a, CCW (positive) → S_a
         if angle < 0:
@@ -369,7 +376,7 @@ def _order_2h_sp2(
     Uses the highest-CIP-ranked substituent on the partner atom as reference.
     |dihedral| < 90 deg means h1 is cis to ref (pro-Z).
 
-    For allenes (partner is SP), delegates to axial chirality ordering.
+    For cumulenes (partner is SP), delegates to axial chirality ordering.
 
     Returns [pro-Z_idx, pro-E_idx] or sorted if H are equivalent.
     """
@@ -378,7 +385,7 @@ def _order_2h_sp2(
 
     # Allene/cumulene: partner is sp → axial chirality ordering
     if partner_atom.GetHybridization() == Chem.HybridizationType.SP:
-        return _order_2h_allene(mol, center_idx, partner_idx, h_indices)
+        return _order_2h_cumulene(mol, center_idx, partner_idx, h_indices)
 
     # Normal sp2: partner's directly-bonded substituents
     partner_subs = [
@@ -496,16 +503,27 @@ def _order_h_sp2(
     center_idx: int,
     h_indices: list[int]
 ) -> list[int]:
-    """Order H on an sp2 center: Z/E or allene axial chirality."""
+    """Order H on an sp2 center: Z/E, cumulene axial chirality, or geometric.
+
+    sp2 does not imply a double bond — carbocations, radicals, and
+    heteroatoms (e.g. BH3) can be sp2 with only single bonds.
+    """
     if len(h_indices) == 2:
         center_atom = mol.GetAtomWithIdx(center_idx)
         for bond in center_atom.GetBonds():
             if bond.GetBondTypeAsDouble() == 2.0:
                 partner_idx = bond.GetOtherAtomIdx(center_idx)
                 return _order_2h_sp2(mol, center_idx, partner_idx, h_indices)
-        # No double bond found: sorted for determinism
         return sorted(h_indices)
-    return _order_h_geometric(mol, center_idx, h_indices)
+    elif len(h_indices) >= 3:
+        conf = mol.GetConformer()
+        center_pos = np.array(conf.GetAtomPosition(center_idx))
+        sorted_h = sorted(h_indices)
+        v1 = np.array(conf.GetAtomPosition(sorted_h[0])) - center_pos
+        v2 = np.array(conf.GetAtomPosition(sorted_h[1])) - center_pos
+        z_axis = np.cross(v1, v2)
+        z_axis = z_axis / np.linalg.norm(z_axis)
+        return _order_h_geometric(mol, center_idx, h_indices, z_axis=z_axis)
 
 
 def _order_h_sp3(
