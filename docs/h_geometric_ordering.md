@@ -119,7 +119,7 @@ def _order_h_geometric(mol, center_idx, h_indices):
 1. 由轴向取代基 CIP rank 确定 z⁺ 方向（低→高，与 eq 2H 一致）
 2. 3 个 eq H 投影到 ⟂z 平面，atan2 CCW 排序
 
-当 NH1 与 NH2 CIP rank **相同**时，z⁺ 无法由化学确定。此时轴向两端为等价重原子，需用 `_CanonicalOrder`（InChI /N: 中的规范序号）定方向：规范序号小的 → 大的为 z⁺。这与 Case A 中用 `min(h_indices)` 选参考 H 同理——等价中任选，仅需确定性。
+当 NH1 与 NH2 CIP rank **相同**时，z⁺ 无法由化学确定。此时轴向两端为等价重原子，需用 `_CanonicalOrder`（InChI /N: 中的规范序号）定方向：规范序号小的 → z⁺。这与 Case A 中用 `min(h_indices)` 选参考 H 同理——等价中任选，仅需确定性。
 
 当前代码直接 fallback 到 generic geometric（max-Z 选 ref），没有利用轴向的方向性信息。
 
@@ -167,7 +167,7 @@ fac AAA:  min-idx H 排第一（等价中任选）
 
 两个非 H 互为 trans，4 个 H 在赤道正方形上。以 trans 非 H 对为 z 轴做 CCW 排序。
 
-当两个非 H 的 CIP rank **相同**时，z⁺ 无法由化学确定——需用 `_CanonicalOrder` 定方向（规范序号小的 → 大的为 z⁺）。受影响的场景：SP3D ax 等价 + eq 3H、SP3D2 4H non-H trans ax 等价。
+当两个非 H 的 CIP rank **相同**时，z⁺ 无法由化学确定——需用 `_CanonicalOrder` 定方向（规范序号小的 → z⁺）。受影响的场景：SP3D ax 等价 + eq 3H、SP3D2 4H non-H trans ax 等价。
 
 注意这与此前要删除的 `max(non_h_neighbors, key=lambda n: -n.GetIdx())` 有本质区别：旧逻辑是在**化学不等价**候选之间用 idx 强行选；新逻辑是在**化学等价**候选之间用规范序号保确定性——与 Case A 的 `min(h_indices)` 同类。
 

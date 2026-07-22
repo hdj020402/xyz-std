@@ -10,7 +10,7 @@
 
 3. **geometric 的 z 轴显式指定**：SP3D2 的 geometric 场景均以 **trans pair** 确定 z 轴方向，不使用 `max(non_h_neighbors, key=lambda n: (n.GetAtomicNum(), -n.GetIdx()))` 自动选择。
 
-4. **等价候选用 `_CanonicalOrder` 定方向**：当 trans pair 两端 CIP rank 相同时，z⁺ 由 InChI 规范序号确定（小→大）。`_CanonicalOrder` 在 `get_standard_atom_order` 中通过 `SetIntProp` 写入，RWMol copy 与 `AssignStereochemistry` 均不丢失。受影响的场景：SP3D2 4H non-H trans（ax 等价）、SP3D eq 3H（ax 等价）。
+4. **等价候选用 `_CanonicalOrder` 定方向**：当 trans pair 两端 CIP rank 相同时，z⁺ 由 InChI 规范序号确定（规范序号小的 → z⁺）。`_CanonicalOrder` 在 `get_standard_atom_order` 中通过 `SetIntProp` 写入，RWMol copy 与 `AssignStereochemistry` 均不丢失。受影响的场景：SP3D2 4H non-H trans（ax 等价）、SP3D eq 3H（ax 等价）。
 
 ---
 
@@ -70,7 +70,7 @@ H-X 的 H 环境独特（trans 非 H），排第一。H-H 对走 2H trans 逻辑
 
 4 个 H 全在赤道正方形上。以 trans 非 H 对为 z 轴，CCW 排序 eq 4H。
 
-z⁺ 方向：若非 H 两端 CIP rank 不同 → 低→高；若相同 → `_CanonicalOrder` 小→大。
+z⁺ 方向：若非 H 两端 CIP rank 不同 → 高 CIP rank → z⁺；若相同 → `_CanonicalOrder` 小 → z⁺。
 
 ### 非 H cis（2 个非 H 互为 cis）
 

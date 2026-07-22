@@ -193,9 +193,9 @@ def _get_z_plus_vec(
     """Determine the z⁺ direction (unit vector) of a trans/axial pair.
 
     z⁺ direction: z⁻ → z⁺ along the pair axis.  z⁺ end is determined by:
-      - Both H    → smaller index (has no chemical meaning; deterministic)
+      - Both H    → smaller index (arbitrary but deterministic)
       - H + X     → X (always higher CIP rank than H)
-      - Both X    → CIP rank (higher → z⁺), then _CanonicalOrder (larger → z⁺)
+      - Both X    → CIP rank (higher → z⁺), same rank → smaller _CanonicalOrder
     """
     a, b = pair_indices
     a_is_h = mol.GetAtomWithIdx(a).GetAtomicNum() == 1
@@ -216,7 +216,7 @@ def _get_z_plus_vec(
         else:
             pos0 = mol.GetAtomWithIdx(a).GetIntProp('_CanonicalOrder')
             pos1 = mol.GetAtomWithIdx(b).GetIntProp('_CanonicalOrder')
-            z_plus = a if pos0 > pos1 else b
+            z_plus = a if pos0 < pos1 else b
 
     z_minus = a if b == z_plus else b
 

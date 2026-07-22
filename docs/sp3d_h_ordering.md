@@ -10,7 +10,7 @@
 
 3. **geometric 的 z 轴显式指定**：SP3D 的 geometric 场景均以轴向 pair 确定 z 轴方向，不使用 `max(non_h_neighbors, key=...)` 自动选择。
 
-4. **等价候选用 `_CanonicalOrder` 定方向**：当轴向 pair 两端 CIP rank 相同时，z⁺ 由 InChI 规范序号确定（小→大）。`_CanonicalOrder` 在 `get_standard_atom_order` 中通过 `SetIntProp` 写入，RWMol copy 与 `AssignStereochemistry` 均不丢失。受影响的场景：ax 等价 + eq 3H。
+4. **等价候选用 `_CanonicalOrder` 定方向**：当轴向 pair 两端 CIP rank 相同时，z⁺ 由 InChI 规范序号确定（规范序号小的 → z⁺）。`_CanonicalOrder` 在 `get_standard_atom_order` 中通过 `SetIntProp` 写入，RWMol copy 与 `AssignStereochemistry` 均不丢失。受影响的场景：ax 等价 + eq 3H。
 
 ---
 
@@ -128,7 +128,7 @@ ax H 直接排第一，eq H 直接排第二。无需化学或几何排序（各�
 z⁺ 决定规则：
 
 - **NH_high CIP ≠ NH_low CIP**：高 CIP rank → z⁺
-- **NH_high CIP = NH_low CIP**：`_CanonicalOrder` 大 → z⁺
+- **NH_high CIP = NH_low CIP**：`_CanonicalOrder` 小 → z⁺
 
 ---
 
@@ -167,7 +167,7 @@ z⁺ 决定规则：
 5 个邻居全是 H。2 ax + 3 eq。
 
 - ax 2H：`_order_sp3d_axial_2h` 检查赤道取代基 CIP rank。赤道均为 H → rank 相同 → `len(set) = 1 < 3` → 等价 → `sorted(axial_h)`
-- eq 3H：`_get_z_plus_vec` 在轴向 pair（均为 H）上。同 rank → `_CanonicalOrder` → KeyError（H 不在 heavy_order 中）→ `min(pair_indices)`。geometric CCW 排序
+- eq 3H：`_get_z_plus_vec` 在轴向 pair（均为 H）上，直接按较小 index → z⁺，不触及 `_get_cip_rank`。geometric CCW 排序
 
 ```text
        H_ax1 (z⁺)
