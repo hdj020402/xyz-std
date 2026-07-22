@@ -296,7 +296,7 @@ def _walk_cumulene_far_end(
         sp_count += 1
         next_atoms = []
         for bond in cursor_atom.GetBonds():
-            if bond.GetBondTypeAsDouble() == 2.0:
+            if bond.GetBondType() == Chem.BondType.DOUBLE:
                 other = bond.GetOtherAtomIdx(cursor_idx)
                 if other != prev_idx:
                     next_atoms.append(other)
@@ -442,7 +442,7 @@ def _order_h_sp2(
     if len(h_indices) == 2:
         center_atom = mol.GetAtomWithIdx(center_idx)
         for bond in center_atom.GetBonds():
-            if bond.GetBondTypeAsDouble() == 2.0:
+            if bond.GetBondType() == Chem.BondType.DOUBLE:
                 partner_idx = bond.GetOtherAtomIdx(center_idx)
                 return _order_2h_sp2(mol, center_idx, partner_idx, h_indices)
         return sorted(h_indices)
@@ -548,6 +548,34 @@ def _order_h_sp3(
     return _order_h_geometric(mol, center_idx, h_indices)
 
 
+def _compute_pair_angles(
+    mol: Chem.Mol,
+    center_idx: int
+) -> list[tuple[float, int, int]]:
+    """Return (angle_rad, idx_i, idx_j) for all neighbor pairs, sorted descending."""
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    all_nbrs = list(center_atom.GetNeighbors())
+
+    vecs = {n.GetIdx(): np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+            for n in all_nbrs}
+    nbr_indices = [n.GetIdx() for n in all_nbrs]
+
+    pairs = []
+    for i in range(len(nbr_indices)):
+        for j in range(i + 1, len(nbr_indices)):
+            vi = vecs[nbr_indices[i]]
+            vj = vecs[nbr_indices[j]]
+            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
+            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
+            angle = np.arccos(cos_angle)
+            pairs.append((angle, nbr_indices[i], nbr_indices[j]))
+
+    pairs.sort(key=lambda x: -x[0])
+    return pairs
+
+
 def _classify_sp3d_positions(
     mol: Chem.Mol,
     center_idx: int
@@ -562,41 +590,21 @@ def _classify_sp3d_positions(
     If classification fails (not 5 neighbors, or no clear axis),
     returns all neighbors as equatorial.
     """
-    conf = mol.GetConformer()
-    center_pos = np.array(conf.GetAtomPosition(center_idx))
     center_atom = mol.GetAtomWithIdx(center_idx)
     all_nbrs = list(center_atom.GetNeighbors())
-
-    if len(all_nbrs) != 5:
-        return ([], [n.GetIdx() for n in all_nbrs])
-
-    vecs = {}
-    for n in all_nbrs:
-        vecs[n.GetIdx()] = np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
-
     nbr_indices = [n.GetIdx() for n in all_nbrs]
 
-    # Find the pair with the largest angle: these are the axial neighbors
-    max_angle = 0.0
-    axial_pair = (nbr_indices[0], nbr_indices[1])
-    for i in range(len(nbr_indices)):
-        for j in range(i + 1, len(nbr_indices)):
-            vi = vecs[nbr_indices[i]]
-            vj = vecs[nbr_indices[j]]
-            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
-            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
-            angle = np.arccos(cos_angle)
-            if angle > max_angle:
-                max_angle = angle
-                axial_pair = (nbr_indices[i], nbr_indices[j])
+    if len(all_nbrs) != 5:
+        return ([], nbr_indices)
 
-    # Require the axial angle to be reasonably close to 180°
+    pairs = _compute_pair_angles(mol, center_idx)
+    max_angle, i, j = pairs[0]
+
     if max_angle < np.radians(140.0):
         return ([], nbr_indices)
 
-    axial_indices = list(axial_pair)
-    equatorial_indices = [i for i in nbr_indices if i not in axial_indices]
-
+    axial_indices = [i, j]
+    equatorial_indices = [idx for idx in nbr_indices if idx not in axial_indices]
     return (axial_indices, equatorial_indices)
 
 
@@ -669,17 +677,9 @@ def _order_sp3d_equatorial_2h(
     if len(set(ax_ranks)) < 2:
         return sorted(h_indices)  # equal ranks → no defined z⁺ → H equivalent
 
-    # z_axis: ax_low → ax_high (z⁺ direction)
-    ax_sorted = sorted(axial_indices, key=lambda i: -_get_cip_rank(mol.GetAtomWithIdx(i)))
-    ax_high, ax_low = ax_sorted[0], ax_sorted[1]
-
     conf = mol.GetConformer()
     center_pos = np.array(conf.GetAtomPosition(center_idx))
-
-    ax_high_pos = np.array(conf.GetAtomPosition(ax_high))
-    ax_low_pos = np.array(conf.GetAtomPosition(ax_low))
-    z_axis = ax_high_pos - ax_low_pos
-    z_axis = z_axis / np.linalg.norm(z_axis)
+    z_axis = _get_z_plus_vec(mol, (axial_indices[0], axial_indices[1]))
 
     ref_idx = [i for i in eq_indices if i not in (h1_idx, h2_idx)][0]
 
@@ -747,36 +747,16 @@ def _find_sp3d2_trans_pairs(
     Returns up to 3 (idx1, idx2) tuples, sorted by angle descending.
     Only pairs with angle > 150° are included.
     """
-    conf = mol.GetConformer()
-    center_pos = np.array(conf.GetAtomPosition(center_idx))
-    center_atom = mol.GetAtomWithIdx(center_idx)
-    all_nbrs = list(center_atom.GetNeighbors())
-
-    vecs = {}
-    for n in all_nbrs:
-        vecs[n.GetIdx()] = np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
-
-    pairs_with_angles = []
-    nbr_indices = [n.GetIdx() for n in all_nbrs]
-    for i in range(len(nbr_indices)):
-        for j in range(i + 1, len(nbr_indices)):
-            vi = vecs[nbr_indices[i]]
-            vj = vecs[nbr_indices[j]]
-            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
-            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
-            angle = np.arccos(cos_angle)
-            if angle > np.radians(150.0):
-                pairs_with_angles.append((angle, nbr_indices[i], nbr_indices[j]))
-
-    pairs_with_angles.sort(key=lambda x: -x[0])
+    pairs = _compute_pair_angles(mol, center_idx)
 
     used: set[int] = set()
     trans_pairs: list[tuple[int, int]] = []
-    for _, i, j in pairs_with_angles:
-        if i not in used and j not in used:
-            trans_pairs.append((i, j))
-            used.add(i)
-            used.add(j)
+    for angle, i, j in pairs:
+        if angle > np.radians(150.0):
+            if i not in used and j not in used:
+                trans_pairs.append((i, j))
+                used.add(i)
+                used.add(j)
 
     return trans_pairs
 
