@@ -3,6 +3,10 @@ from rdkit import Chem
 from rdkit.Chem import rdMolTransforms
 
 
+# =============================================================================
+# Common Utilities
+# =============================================================================
+
 def _get_cip_rank(atom: Chem.Atom) -> int:
     """Get _CIPRank from an atom, with a clear error if missing."""
     props = atom.GetPropsAsDict()
@@ -186,85 +190,98 @@ def _deuterate_atom(mol: Chem.Mol, atom_idx: int) -> Chem.Mol:
     return mol_tmp
 
 
-def _order_2h_signed_volume(
+def _get_z_plus_vec(
+    mol: Chem.Mol,
+    pair_indices: tuple[int, int]
+) -> np.ndarray:
+    """Determine the z⁺ direction (unit vector) of a trans/axial pair.
+
+    z⁺ direction: z⁻ → z⁺ along the pair axis. z⁺ end is determined by
+    CIP rank (higher → z⁺), _CanonicalOrder (larger → z⁺), or min index.
+    """
+    r0 = _get_cip_rank(mol.GetAtomWithIdx(pair_indices[0]))
+    r1 = _get_cip_rank(mol.GetAtomWithIdx(pair_indices[1]))
+
+    if r0 != r1:
+        z_plus = pair_indices[0] if r0 > r1 else pair_indices[1]
+    else:
+        # Same CIP rank: use canonical heavy-atom order
+        try:
+            pos0 = mol.GetAtomWithIdx(pair_indices[0]).GetIntProp('_CanonicalOrder')
+            pos1 = mol.GetAtomWithIdx(pair_indices[1]).GetIntProp('_CanonicalOrder')
+            z_plus = pair_indices[0] if pos0 > pos1 else pair_indices[1]
+        except KeyError:
+            # Both are H (not in heavy_order): min original index
+            z_plus = min(pair_indices)
+
+    z_minus = pair_indices[0] if pair_indices[1] == z_plus else pair_indices[1]
+
+    conf = mol.GetConformer()
+    pos_plus = np.array(conf.GetAtomPosition(z_plus))
+    pos_minus = np.array(conf.GetAtomPosition(z_minus))
+    vec = pos_plus - pos_minus
+    return vec / np.linalg.norm(vec)
+
+
+def _order_h_geometric(
     mol: Chem.Mol,
     center_idx: int,
     h_indices: list[int],
+    z_axis: np.ndarray | None = None,
 ) -> list[int]:
-    """Order 2 H on a prochiral center via signed volume of tetrahedron.
+    """Order H atoms by geometric CCW angle projection.
 
-    Used as a fallback when RDKit cannot assign _CIPCode to the center
-    (e.g., P, S, As, and other non-carbon stereogenic centers).
+    Projects H atoms onto a plane perpendicular to a reference axis,
+    then sorts by CCW atan2 angle.
 
-    For 4-coordinate centers, uses the four explicit substituents.
-    For 3-coordinate pyramidal centers (phosphines, sulfonium ions, etc.),
-    infers the lone pair position as the lowest-priority substituent.
+    Args:
+        mol: RDKit Mol with explicit H and a 3D conformer
+        center_idx: Index of the heavy atom center
+        h_indices: Indices of H atoms attached to center (length >= 2)
+        z_axis: Optional explicit z-axis unit vector (from trans/axial pair).
+                If None, auto-selects a reference direction:
+                  - non-H neighbor (R-CH3, Case B)
+                  - lone pair (NH3/PH3, 3H + lp)
+                  - min-index H placed first (CH4, Case A)
 
-    CIP priority: non-H substituents (by _CIPRank) > h1(D) > h2(H)
-    [> lone_pair for 3-coordinate].
-
-    Returns [pro-R_idx, pro-S_idx] or sorted if undetermined.
+    Returns:
+        Deterministically ordered list of H atom indices
     """
-    h1_idx, h2_idx = h_indices
     conf = mol.GetConformer()
     center_pos = np.array(conf.GetAtomPosition(center_idx))
-    center_atom = mol.GetAtomWithIdx(center_idx)
 
-    neighbors: list[Chem.Atom] = list(center_atom.GetNeighbors())
-    n_explicit = len(neighbors)
-
-    non_h = [n for n in neighbors if n.GetIdx() not in (h1_idx, h2_idx)]
-    non_h.sort(key=lambda n: -_get_cip_rank(n))
-    vecs = {n.GetIdx(): np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
-            for n in neighbors}
-
-    if n_explicit == 4:
-        non_h_ranks = [_get_cip_rank(n) for n in non_h]
-        if len(set(non_h_ranks)) == 1:
-            return sorted(h_indices)  # H equivalent
-
-        vol = _signed_tetrahedron_volume(
-            vecs[non_h[0].GetIdx()], vecs[non_h[1].GetIdx()],
-            vecs[h1_idx], vecs[h2_idx])
-        return [h1_idx, h2_idx] if vol < 0 else [h2_idx, h1_idx]
-
-    elif n_explicit == 3:
-        lp_pos = _infer_lone_pair_position(center_pos, list(vecs.values()))
-
-        vol = _signed_tetrahedron_volume(
-            vecs[non_h[0].GetIdx()], vecs[h1_idx],
-            vecs[h2_idx], lp_pos - center_pos)
-        return [h1_idx, h2_idx] if vol < 0 else [h2_idx, h1_idx]
-
+    prefix: list[int] = []
+    if z_axis is not None:
+        h_list = h_indices
     else:
-        return sorted(h_indices)
+        center_atom = mol.GetAtomWithIdx(center_idx)
+        all_nbrs = list(center_atom.GetNeighbors())
+        non_h_nbrs = [n for n in all_nbrs if n.GetAtomicNum() != 1]
+
+        if non_h_nbrs:
+            ref_vec = np.array(conf.GetAtomPosition(non_h_nbrs[0].GetIdx())) - center_pos
+            z_axis = ref_vec / np.linalg.norm(ref_vec)
+            h_list = h_indices
+        elif len(all_nbrs) == 3:
+            bond_vecs = [np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+                         for n in all_nbrs]
+            lp_vec = _infer_lone_pair_position(center_pos, bond_vecs) - center_pos
+            z_axis = lp_vec / np.linalg.norm(lp_vec)
+            h_list = h_indices
+        else:
+            ref_h = min(h_indices)
+            prefix = [ref_h]
+            h_list = [h for h in h_indices if h != ref_h]
+            ref_vec = np.array(conf.GetAtomPosition(ref_h)) - center_pos
+            z_axis = ref_vec / np.linalg.norm(ref_vec)
+
+    h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_list]
+    return prefix + _order_h_by_angle_projection(center_pos, z_axis, h_pos_list)
 
 
-def _order_2h_sp3(
-    mol: Chem.Mol,
-    center_idx: int,
-    h_indices: list[int],
-) -> list[int]:
-    """
-    Order 2 H on sp3 center via deuterium substitution + CIP assignment.
-    Replaces h1 with D, then checks if center becomes R or S.
-    Falls back to signed-volume method for non-carbon centers (P, S, etc.).
-
-    Returns [pro-R_idx, pro-S_idx] or sorted if undetermined.
-    """
-    h1_idx, h2_idx = h_indices
-    mol_tmp = _deuterate_atom(mol, h1_idx)
-    cip = mol_tmp.GetAtomWithIdx(center_idx).GetPropsAsDict().get('_CIPCode')
-
-    if cip == 'R':
-        return [h1_idx, h2_idx]  # h1 is pro-R
-    elif cip == 'S':
-        return [h2_idx, h1_idx]  # h2 is pro-R
-
-    # RDKit cannot assign CIP (non-carbon centers: P, S, As, etc.)
-    # Fall back to manual signed-volume determination
-    return _order_2h_signed_volume(mol, center_idx, h_indices)
-
+# =============================================================================
+# SP2 — Trigonal Planar
+# =============================================================================
 
 def _walk_cumulene_far_end(
     mol: Chem.Mol,
@@ -420,95 +437,6 @@ def _order_2h_sp2(
         return [h2_idx, h1_idx]  # h2 is pro-Z
 
 
-def _get_z_plus_vec(
-    mol: Chem.Mol,
-    pair_indices: tuple[int, int]
-) -> np.ndarray:
-    """Determine the z⁺ direction (unit vector) of a trans/axial pair.
-
-    z⁺ direction: z⁻ → z⁺ along the pair axis. z⁺ end is determined by
-    CIP rank (higher → z⁺), _CanonicalOrder (larger → z⁺), or min index.
-    """
-    r0 = _get_cip_rank(mol.GetAtomWithIdx(pair_indices[0]))
-    r1 = _get_cip_rank(mol.GetAtomWithIdx(pair_indices[1]))
-
-    if r0 != r1:
-        z_plus = pair_indices[0] if r0 > r1 else pair_indices[1]
-    else:
-        # Same CIP rank: use canonical heavy-atom order
-        try:
-            pos0 = mol.GetAtomWithIdx(pair_indices[0]).GetIntProp('_CanonicalOrder')
-            pos1 = mol.GetAtomWithIdx(pair_indices[1]).GetIntProp('_CanonicalOrder')
-            z_plus = pair_indices[0] if pos0 > pos1 else pair_indices[1]
-        except KeyError:
-            # Both are H (not in heavy_order): min original index
-            z_plus = min(pair_indices)
-
-    z_minus = pair_indices[0] if pair_indices[1] == z_plus else pair_indices[1]
-
-    conf = mol.GetConformer()
-    pos_plus = np.array(conf.GetAtomPosition(z_plus))
-    pos_minus = np.array(conf.GetAtomPosition(z_minus))
-    vec = pos_plus - pos_minus
-    return vec / np.linalg.norm(vec)
-
-
-def _order_h_geometric(
-    mol: Chem.Mol,
-    center_idx: int,
-    h_indices: list[int],
-    z_axis: np.ndarray | None = None,
-) -> list[int]:
-    """Order H atoms by geometric CCW angle projection.
-
-    Projects H atoms onto a plane perpendicular to a reference axis,
-    then sorts by CCW atan2 angle.
-
-    Args:
-        mol: RDKit Mol with explicit H and a 3D conformer
-        center_idx: Index of the heavy atom center
-        h_indices: Indices of H atoms attached to center (length >= 2)
-        z_axis: Optional explicit z-axis unit vector (from trans/axial pair).
-                If None, auto-selects a reference direction:
-                  - non-H neighbor (R-CH3, Case B)
-                  - lone pair (NH3/PH3, 3H + lp)
-                  - min-index H placed first (CH4, Case A)
-
-    Returns:
-        Deterministically ordered list of H atom indices
-    """
-    conf = mol.GetConformer()
-    center_pos = np.array(conf.GetAtomPosition(center_idx))
-
-    prefix: list[int] = []
-    if z_axis is not None:
-        h_list = h_indices
-    else:
-        center_atom = mol.GetAtomWithIdx(center_idx)
-        all_nbrs = list(center_atom.GetNeighbors())
-        non_h_nbrs = [n for n in all_nbrs if n.GetAtomicNum() != 1]
-
-        if non_h_nbrs:
-            ref_vec = np.array(conf.GetAtomPosition(non_h_nbrs[0].GetIdx())) - center_pos
-            z_axis = ref_vec / np.linalg.norm(ref_vec)
-            h_list = h_indices
-        elif len(all_nbrs) == 3:
-            bond_vecs = [np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
-                         for n in all_nbrs]
-            lp_vec = _infer_lone_pair_position(center_pos, bond_vecs) - center_pos
-            z_axis = lp_vec / np.linalg.norm(lp_vec)
-            h_list = h_indices
-        else:
-            ref_h = min(h_indices)
-            prefix = [ref_h]
-            h_list = [h for h in h_indices if h != ref_h]
-            ref_vec = np.array(conf.GetAtomPosition(ref_h)) - center_pos
-            z_axis = ref_vec / np.linalg.norm(ref_vec)
-
-    h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_list]
-    return prefix + _order_h_by_angle_projection(center_pos, z_axis, h_pos_list)
-
-
 def _order_h_sp2(
     mol: Chem.Mol,
     center_idx: int,
@@ -537,6 +465,90 @@ def _order_h_sp2(
         return _order_h_geometric(mol, center_idx, h_indices, z_axis=z_axis)
 
 
+# =============================================================================
+# SP3 — Tetrahedral
+# =============================================================================
+
+def _order_2h_signed_volume(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int],
+) -> list[int]:
+    """Order 2 H on a prochiral center via signed volume of tetrahedron.
+
+    Used as a fallback when RDKit cannot assign _CIPCode to the center
+    (e.g., P, S, As, and other non-carbon stereogenic centers).
+
+    For 4-coordinate centers, uses the four explicit substituents.
+    For 3-coordinate pyramidal centers (phosphines, sulfonium ions, etc.),
+    infers the lone pair position as the lowest-priority substituent.
+
+    CIP priority: non-H substituents (by _CIPRank) > h1(D) > h2(H)
+    [> lone_pair for 3-coordinate].
+
+    Returns [pro-R_idx, pro-S_idx] or sorted if undetermined.
+    """
+    h1_idx, h2_idx = h_indices
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    center_atom = mol.GetAtomWithIdx(center_idx)
+
+    neighbors: list[Chem.Atom] = list(center_atom.GetNeighbors())
+    n_explicit = len(neighbors)
+
+    non_h = [n for n in neighbors if n.GetIdx() not in (h1_idx, h2_idx)]
+    non_h.sort(key=lambda n: -_get_cip_rank(n))
+    vecs = {n.GetIdx(): np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+            for n in neighbors}
+
+    if n_explicit == 4:
+        non_h_ranks = [_get_cip_rank(n) for n in non_h]
+        if len(set(non_h_ranks)) == 1:
+            return sorted(h_indices)  # H equivalent
+
+        vol = _signed_tetrahedron_volume(
+            vecs[non_h[0].GetIdx()], vecs[non_h[1].GetIdx()],
+            vecs[h1_idx], vecs[h2_idx])
+        return [h1_idx, h2_idx] if vol < 0 else [h2_idx, h1_idx]
+
+    elif n_explicit == 3:
+        lp_pos = _infer_lone_pair_position(center_pos, list(vecs.values()))
+
+        vol = _signed_tetrahedron_volume(
+            vecs[non_h[0].GetIdx()], vecs[h1_idx],
+            vecs[h2_idx], lp_pos - center_pos)
+        return [h1_idx, h2_idx] if vol < 0 else [h2_idx, h1_idx]
+
+    else:
+        return sorted(h_indices)
+
+
+def _order_2h_sp3(
+    mol: Chem.Mol,
+    center_idx: int,
+    h_indices: list[int],
+) -> list[int]:
+    """
+    Order 2 H on sp3 center via deuterium substitution + CIP assignment.
+    Replaces h1 with D, then checks if center becomes R or S.
+    Falls back to signed-volume method for non-carbon centers (P, S, etc.).
+
+    Returns [pro-R_idx, pro-S_idx] or sorted if undetermined.
+    """
+    h1_idx, h2_idx = h_indices
+    mol_tmp = _deuterate_atom(mol, h1_idx)
+    cip = mol_tmp.GetAtomWithIdx(center_idx).GetPropsAsDict().get('_CIPCode')
+
+    if cip == 'R':
+        return [h1_idx, h2_idx]  # h1 is pro-R
+    elif cip == 'S':
+        return [h2_idx, h1_idx]  # h2 is pro-R
+
+    # RDKit cannot assign CIP (non-carbon centers: P, S, As, etc.)
+    # Fall back to manual signed-volume determination
+    return _order_2h_signed_volume(mol, center_idx, h_indices)
+
+
 def _order_h_sp3(
     mol: Chem.Mol,
     center_idx: int,
@@ -546,6 +558,62 @@ def _order_h_sp3(
     if len(h_indices) == 2:
         return _order_2h_sp3(mol, center_idx, h_indices)
     return _order_h_geometric(mol, center_idx, h_indices)
+
+
+# =============================================================================
+# SP3D — Trigonal Bipyramidal
+# =============================================================================
+
+def _classify_sp3d_positions(
+    mol: Chem.Mol,
+    center_idx: int
+) -> tuple[list[int], list[int]]:
+    """Classify neighbors of an SP3D center as axial or equatorial.
+
+    For trigonal bipyramidal (5-coordinate):
+    - The two neighbors forming the largest angle (~180°) are axial.
+    - The remaining three are equatorial.
+
+    Returns (axial_indices, equatorial_indices).
+    If classification fails (not 5 neighbors, or no clear axis),
+    returns all neighbors as equatorial.
+    """
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    all_nbrs = list(center_atom.GetNeighbors())
+
+    if len(all_nbrs) != 5:
+        return ([], [n.GetIdx() for n in all_nbrs])
+
+    vecs = {}
+    for n in all_nbrs:
+        vecs[n.GetIdx()] = np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+
+    nbr_indices = [n.GetIdx() for n in all_nbrs]
+
+    # Find the pair with the largest angle: these are the axial neighbors
+    max_angle = 0.0
+    axial_pair = (nbr_indices[0], nbr_indices[1])
+    for i in range(len(nbr_indices)):
+        for j in range(i + 1, len(nbr_indices)):
+            vi = vecs[nbr_indices[i]]
+            vj = vecs[nbr_indices[j]]
+            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
+            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
+            angle = np.arccos(cos_angle)
+            if angle > max_angle:
+                max_angle = angle
+                axial_pair = (nbr_indices[i], nbr_indices[j])
+
+    # Require the axial angle to be reasonably close to 180°
+    if max_angle < np.radians(140.0):
+        return ([], nbr_indices)
+
+    axial_indices = list(axial_pair)
+    equatorial_indices = [i for i in nbr_indices if i not in axial_indices]
+
+    return (axial_indices, equatorial_indices)
 
 
 def _order_sp3d_axial_2h(
@@ -638,58 +706,6 @@ def _order_sp3d_equatorial_2h(
         center_pos, z_axis, h_pos_list, x_direction=ref_vec)
 
 
-def _classify_sp3d_positions(
-    mol: Chem.Mol,
-    center_idx: int
-) -> tuple[list[int], list[int]]:
-    """Classify neighbors of an SP3D center as axial or equatorial.
-
-    For trigonal bipyramidal (5-coordinate):
-    - The two neighbors forming the largest angle (~180°) are axial.
-    - The remaining three are equatorial.
-
-    Returns (axial_indices, equatorial_indices).
-    If classification fails (not 5 neighbors, or no clear axis),
-    returns all neighbors as equatorial.
-    """
-    conf = mol.GetConformer()
-    center_pos = np.array(conf.GetAtomPosition(center_idx))
-    center_atom = mol.GetAtomWithIdx(center_idx)
-    all_nbrs = list(center_atom.GetNeighbors())
-
-    if len(all_nbrs) != 5:
-        return ([], [n.GetIdx() for n in all_nbrs])
-
-    vecs = {}
-    for n in all_nbrs:
-        vecs[n.GetIdx()] = np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
-
-    nbr_indices = [n.GetIdx() for n in all_nbrs]
-
-    # Find the pair with the largest angle: these are the axial neighbors
-    max_angle = 0.0
-    axial_pair = (nbr_indices[0], nbr_indices[1])
-    for i in range(len(nbr_indices)):
-        for j in range(i + 1, len(nbr_indices)):
-            vi = vecs[nbr_indices[i]]
-            vj = vecs[nbr_indices[j]]
-            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
-            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
-            angle = np.arccos(cos_angle)
-            if angle > max_angle:
-                max_angle = angle
-                axial_pair = (nbr_indices[i], nbr_indices[j])
-
-    # Require the axial angle to be reasonably close to 180°
-    if max_angle < np.radians(140.0):
-        return ([], nbr_indices)
-
-    axial_indices = list(axial_pair)
-    equatorial_indices = [i for i in nbr_indices if i not in axial_indices]
-
-    return (axial_indices, equatorial_indices)
-
-
 def _order_h_sp3d(
     mol: Chem.Mol,
     center_idx: int,
@@ -738,6 +754,10 @@ def _order_h_sp3d(
 
     return result
 
+
+# =============================================================================
+# SP3D2 — Octahedral
+# =============================================================================
 
 def _find_sp3d2_trans_pairs(
     mol: Chem.Mol,
@@ -1136,6 +1156,10 @@ def _order_h_sp3d2(
             mol, center_idx, h_indices, hh_pairs
         )
 
+
+# =============================================================================
+# Top-Level Dispatcher
+# =============================================================================
 
 def _order_h_on_heavy_atom(
     mol: Chem.Mol,
