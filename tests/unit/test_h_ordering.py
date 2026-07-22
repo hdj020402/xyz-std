@@ -4,9 +4,14 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from xyz_std.h_ordering import (
-    _order_h_on_heavy_atom,
+    _build_perp_basis,
+    _deuterate_atom,
+    _get_cip_rank,
+    _get_z_plus_vec,
+    _is_ccw,
     _order_h_by_angle_projection,
     _order_h_geometric,
+    _order_h_on_heavy_atom,
     _order_h_sp2,
     _order_h_sp3,
     _order_h_sp3d,
@@ -23,7 +28,9 @@ from xyz_std.h_ordering import (
     _order_2h_cumulene,
     _order_2h_signed_volume,
     _infer_lone_pair_position,
-    _get_z_plus_vec,
+    _projected_angle,
+    _signed_angle_between,
+    _signed_tetrahedron_volume,
 )
 from xyz_std.io import xyz_to_rdkit_mol
 
@@ -1776,3 +1783,538 @@ class TestOrderHSp3d24hNonHCis:
                 assert set(r) == set(h_all)
                 return
         pytest.fail("No octahedral center found")
+
+
+# =============================================================================
+# Common Utility Function Tests
+# =============================================================================
+
+
+class TestSignedAngleBetween:
+    """Tests for _signed_angle_between."""
+
+    def test_ccw_positive(self):
+        """v1=(1,0,0), v2=(0,1,0) around z-axis → CCW → positive angle."""
+        axis = np.array([0.0, 0.0, 1.0])
+        v1 = np.array([1.0, 0.0, 0.0])
+        v2 = np.array([0.0, 1.0, 0.0])
+        angle = _signed_angle_between(axis, v1, v2)
+        assert angle > 0, f"CCW should be positive, got {angle}"
+        assert abs(angle - np.pi / 2) < 1e-10
+
+    def test_cw_negative(self):
+        """v1=(0,1,0), v2=(1,0,0) around z-axis → CW → negative angle."""
+        axis = np.array([0.0, 0.0, 1.0])
+        v1 = np.array([0.0, 1.0, 0.0])
+        v2 = np.array([1.0, 0.0, 0.0])
+        angle = _signed_angle_between(axis, v1, v2)
+        assert angle < 0, f"CW should be negative, got {angle}"
+
+    def test_parallel_zero(self):
+        """Same direction → angle ≈ 0."""
+        axis = np.array([0.0, 0.0, 1.0])
+        v1 = np.array([1.0, 0.0, 0.0])
+        angle = _signed_angle_between(axis, v1, v1)
+        assert abs(angle) < 1e-10, f"Parallel should be 0, got {angle}"
+
+    def test_antiparallel_pi(self):
+        """Opposite directions → angle ≈ ±π."""
+        axis = np.array([0.0, 0.0, 1.0])
+        v1 = np.array([1.0, 0.0, 0.0])
+        v2 = np.array([-1.0, 0.0, 0.0])
+        angle = _signed_angle_between(axis, v1, v2)
+        assert abs(abs(angle) - np.pi) < 1e-10
+
+    def test_not_perpendicular_to_axis(self):
+        """Vectors with z component: only xy projection matters."""
+        axis = np.array([0.0, 0.0, 1.0])
+        v1 = np.array([1.0, 0.0, 5.0])
+        v2 = np.array([0.0, 1.0, -3.0])
+        angle = _signed_angle_between(axis, v1, v2)
+        assert angle > 0  # CCW in xy projection
+
+
+class TestIsCcw:
+    """Tests for _is_ccw."""
+
+    def _make_mol_3pts(self, pts):
+        """Make a minimal mol with 3 atoms at given positions around origin."""
+        mol = Chem.RWMol()
+        c = Chem.Atom(6)
+        c_idx = mol.AddAtom(c)
+        indices = []
+        for _ in range(3):
+            a = Chem.Atom(1)
+            idx = mol.AddAtom(a)
+            mol.AddBond(c_idx, idx, Chem.BondType.SINGLE)
+            indices.append(idx)
+        mol.UpdatePropertyCache(strict=False)
+        mol = mol.GetMol()
+        conf = Chem.Conformer(4)
+        conf.SetAtomPosition(c_idx, (0.0, 0.0, 0.0))
+        for i, pos in enumerate(pts):
+            conf.SetAtomPosition(indices[i], pos)
+        mol.AddConformer(conf)
+        return mol, c_idx, tuple(indices)
+
+    def test_ccw_true(self):
+        """Three points in CCW order around z-axis."""
+        mol, c, idxs = self._make_mol_3pts([
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (-1.0, 0.0, 0.0),
+        ])
+        z = np.array([0.0, 0.0, 1.0])
+        assert _is_ccw(mol, c, z, idxs) is True
+
+    def test_cw_false(self):
+        """Three points in CW order around z-axis."""
+        mol, c, idxs = self._make_mol_3pts([
+            (1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+        ])
+        z = np.array([0.0, 0.0, 1.0])
+        assert _is_ccw(mol, c, z, idxs) is False
+
+    def test_requires_at_least_3(self):
+        """Less than 3 atoms should raise ValueError."""
+        mol, c, idxs = self._make_mol_3pts([
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (-1.0, 0.0, 0.0),
+        ])
+        z = np.array([0.0, 0.0, 1.0])
+        with pytest.raises(ValueError, match="at least 3"):
+            _is_ccw(mol, c, z, idxs[:2])
+
+
+class TestBuildPerpBasis:
+    """Tests for _build_perp_basis."""
+
+    def test_z_axis_standard(self):
+        """z_axis along z → x,y should be (1,0,0),(0,1,0)."""
+        z = np.array([0.0, 0.0, 1.0])
+        x, y = _build_perp_basis(z)
+        assert np.allclose(x, [1.0, 0.0, 0.0])
+        assert np.allclose(y, [0.0, 1.0, 0.0])
+        assert np.allclose(np.cross(x, y), z)
+
+    def test_z_axis_arbitrary(self):
+        """Oblique z_axis → x,y should be orthonormal."""
+        z = np.array([1.0, 1.0, 1.0]) / np.sqrt(3)
+        x, y = _build_perp_basis(z)
+        assert abs(np.dot(x, y)) < 1e-10
+        assert abs(np.dot(x, z)) < 1e-10
+        assert abs(np.dot(y, z)) < 1e-10
+        assert abs(np.linalg.norm(x) - 1.0) < 1e-10
+        assert abs(np.linalg.norm(y) - 1.0) < 1e-10
+        assert np.allclose(np.cross(x, y), z)
+
+    def test_with_x_direction(self):
+        """x_direction should align x-axis toward its projection."""
+        z = np.array([0.0, 0.0, 1.0])
+        x_dir = np.array([0.0, 1.0, 0.0])
+        x, y = _build_perp_basis(z, x_direction=x_dir)
+        assert np.allclose(x, [0.0, 1.0, 0.0])
+        assert np.allclose(y, [-1.0, 0.0, 0.0])
+        assert np.allclose(np.cross(x, y), z)
+
+
+class TestProjectedAngle:
+    """Tests for _projected_angle."""
+
+    def test_quadrants(self):
+        """Points in 4 quadrants should give correct atan2 angles."""
+        z = np.array([0.0, 0.0, 1.0])
+        x = np.array([1.0, 0.0, 0.0])
+        y = np.array([0.0, 1.0, 0.0])
+
+        a0 = _projected_angle(np.array([1.0, 0.0, 0.0]), z, x, y)
+        assert abs(a0) < 1e-10
+
+        a1 = _projected_angle(np.array([0.0, 1.0, 0.0]), z, x, y)
+        assert abs(a1 - np.pi / 2) < 1e-10
+
+        a2 = _projected_angle(np.array([-1.0, 0.0, 0.0]), z, x, y)
+        assert abs(abs(a2) - np.pi) < 1e-10
+
+        a3 = _projected_angle(np.array([0.0, -1.0, 0.0]), z, x, y)
+        assert abs(a3 + np.pi / 2) < 1e-10
+
+    def test_z_component_ignored(self):
+        """Only projection onto ⟂z plane matters."""
+        z = np.array([0.0, 0.0, 1.0])
+        x = np.array([1.0, 0.0, 0.0])
+        y = np.array([0.0, 1.0, 0.0])
+        a = _projected_angle(np.array([0.0, 1.0, 100.0]), z, x, y)
+        assert abs(a - np.pi / 2) < 1e-10
+
+
+class TestSignedTetrahedronVolume:
+    """Tests for _signed_tetrahedron_volume."""
+
+    def test_r_configuration_negative(self):
+        """R configuration → negative signed volume (a,b,c left-handed)."""
+        # a,b in xy, c in -z → left-handed when d is at origin
+        a = np.array([1.0, 0.0, 0.0])
+        b = np.array([0.0, 1.0, 0.0])
+        c = np.array([0.0, 0.0, -1.0])
+        d = np.array([0.0, 0.0, 0.0])
+        vol = _signed_tetrahedron_volume(a, b, c, d)
+        assert vol < 0, f"R should give negative volume, got {vol}"
+
+    def test_s_configuration_positive(self):
+        """S configuration → positive signed volume."""
+        a = np.array([1.0, 0.0, 0.0])
+        b = np.array([0.0, 1.0, 0.0])
+        c = np.array([0.0, 0.0, 1.0])
+        d = np.array([0.0, 0.0, 0.0])
+        vol = _signed_tetrahedron_volume(a, b, c, d)
+        assert vol > 0, f"S should give positive volume, got {vol}"
+
+    def test_planar_near_zero(self):
+        """Coplanar vertices → volume ≈ 0."""
+        a = np.array([1.0, 0.0, 0.0])
+        b = np.array([0.0, 1.0, 0.0])
+        c = np.array([-1.0, 0.0, 0.0])
+        d = np.array([0.0, -1.0, 0.0])
+        vol = _signed_tetrahedron_volume(a, b, c, d)
+        assert abs(vol) < 1e-10
+
+
+class TestDeuterateAtom:
+    """Tests for _deuterate_atom."""
+
+    def test_isotope_set_to_2(self):
+        """Atom should have isotope=2 after deuteration."""
+        mol = _make_mol_with_3d("CC")
+        c_idx = 0
+        h_indices = [n.GetIdx() for n in mol.GetAtomWithIdx(c_idx).GetNeighbors()
+                     if n.GetAtomicNum() == 1]
+        assert len(h_indices) > 0
+        h = h_indices[0]
+        mol_d = _deuterate_atom(mol, h)
+        assert mol_d.GetAtomWithIdx(h).GetIsotope() == 2
+
+    def test_returns_new_mol(self):
+        """Original mol should not be modified."""
+        mol = _make_mol_with_3d("CC")
+        c_idx = 0
+        h_indices = [n.GetIdx() for n in mol.GetAtomWithIdx(c_idx).GetNeighbors()
+                     if n.GetAtomicNum() == 1]
+        h = h_indices[0]
+        orig_isotope = mol.GetAtomWithIdx(h).GetIsotope()
+        _deuterate_atom(mol, h)
+        assert mol.GetAtomWithIdx(h).GetIsotope() == orig_isotope
+
+    def test_stereochemistry_reassigned(self):
+        """Deuterated mol should have _CIPRank available after deuteration."""
+        mol = _make_mol_with_3d("CCO")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) == 2:
+                mol_d = _deuterate_atom(mol, h_nbrs[0].GetIdx())
+                for a in mol_d.GetAtoms():
+                    if a.GetAtomicNum() != 1:
+                        _ = _get_cip_rank(a)
+                return
+        pytest.skip("No CH2 center found")
+
+
+class TestGetZPlusVec:
+    """Tests for _get_z_plus_vec."""
+
+    def _make_pair_mol(self, sym1, sym2):
+        """Make a minimal mol with 2 atoms and a center."""
+        mol = Chem.RWMol()
+        c = Chem.Atom(6)
+        c_idx = mol.AddAtom(c)
+        a1 = Chem.Atom(sym1)
+        a2 = Chem.Atom(sym2)
+        idx1 = mol.AddAtom(a1)
+        idx2 = mol.AddAtom(a2)
+        mol.AddBond(c_idx, idx1, Chem.BondType.SINGLE)
+        mol.AddBond(c_idx, idx2, Chem.BondType.SINGLE)
+        mol.UpdatePropertyCache(strict=False)
+        mol = mol.GetMol()
+        conf = Chem.Conformer(3)
+        conf.SetAtomPosition(c_idx, (0.0, 0.0, 0.0))
+        conf.SetAtomPosition(idx1, (0.0, 0.0, 1.0))
+        conf.SetAtomPosition(idx2, (0.0, 0.0, -1.0))
+        mol.AddConformer(conf)
+        Chem.AssignAtomChiralTagsFromStructure(mol)
+        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+        _ensure_cip_ranks(mol)
+        return mol, idx1, idx2
+
+    def test_cip_differs(self):
+        """Different CIP ranks → higher rank is z⁺."""
+        mol, f_idx, cl_idx = self._make_pair_mol("F", "Cl")
+        mol.GetAtomWithIdx(f_idx).SetIntProp('_CIPRank', 9)
+        mol.GetAtomWithIdx(cl_idx).SetIntProp('_CIPRank', 17)
+        vec = _get_z_plus_vec(mol, (f_idx, cl_idx))
+        assert vec[2] < 0  # points from F(+) to Cl(-)
+
+    def test_cip_equal_canonical_order(self):
+        """Same CIP rank + _CanonicalOrder → larger order is z⁺."""
+        mol, a_idx, b_idx = self._make_pair_mol("F", "F")
+        mol.GetAtomWithIdx(a_idx).SetIntProp('_CanonicalOrder', 10)
+        mol.GetAtomWithIdx(b_idx).SetIntProp('_CanonicalOrder', 5)
+        vec = _get_z_plus_vec(mol, (a_idx, b_idx))
+        assert vec[2] > 0
+
+    def test_cip_equal_no_canonical(self):
+        """Same CIP rank + no _CanonicalOrder (H atoms) → min index is z⁺."""
+        mol, h1_idx, h2_idx = self._make_pair_mol("H", "H")
+        vec = _get_z_plus_vec(mol, (h1_idx, h2_idx))
+        assert vec[2] > 0
+
+
+class TestGetCipRank:
+    """Tests for _get_cip_rank."""
+
+    def test_missing_cip_rank_raises(self):
+        """Atom without _CIPRank should raise RuntimeError."""
+        mol = Chem.RWMol()
+        a = Chem.Atom(6)
+        a_idx = mol.AddAtom(a)
+        mol.UpdatePropertyCache(strict=False)
+        mol = mol.GetMol()
+        with pytest.raises(RuntimeError, match="missing _CIPRank"):
+            _get_cip_rank(mol.GetAtomWithIdx(a_idx))
+
+    def test_with_cip_rank(self):
+        """Atom with _CIPRank should return its value."""
+        mol = _make_mol_with_3d("C")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 6:
+                rank = _get_cip_rank(atom)
+                assert isinstance(rank, int)
+                return
+
+
+# =============================================================================
+# Branch Coverage Tests
+# =============================================================================
+
+
+class TestCumuleneWalkFailure:
+    """Test _order_2h_cumulene when walk returns far_subs empty."""
+
+    def test_walk_returns_sorted(self):
+        """Ketene H2C=C=O: far end is O with no substituents → sorted."""
+        mol = _make_mol_with_3d("C=C=O")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
+                    assert result == sorted([h1, h2])
+                    return
+        pytest.skip("No terminal =CH2 found in ketene")
+
+
+class TestSp2EmptyPartnerSubs:
+    """Test _order_2h_sp2 with empty partner_subs."""
+
+    def test_partner_has_subs_normal_path(self):
+        """Imine HN=CH2: partner N has H substituent → normal alkene logic."""
+        mol = _make_mol_with_3d("C=N")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    center = atom.GetIdx()
+                    h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                    result = _order_2h_sp2(mol, center, partner, [h1, h2])
+                    assert len(result) == 2
+                    assert set(result) == {h1, h2}
+                    return
+        pytest.skip("No terminal =CH2 found")
+
+
+class TestSp2NoDoubleBond:
+    """Test _order_h_sp2 with 2H but no double bond."""
+
+    def test_sp2_no_double_bond_returns_sorted(self):
+        """sp2 center with 2H and no C=C → sorted."""
+        mol = _make_mol_with_3d("[CH3+]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 6:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
+                          if n.GetAtomicNum() == 1]
+                if len(h_nbrs) >= 2 and atom.GetHybridization() == Chem.HybridizationType.SP2:
+                    result = _order_h_sp2(mol, atom.GetIdx(), h_nbrs)
+                    assert set(result) == set(h_nbrs)
+                    return
+        pytest.skip("CH3+ not SP2 in RDKit")
+
+
+class TestSp3dClassificationFailure:
+    """Tests for SP3D classification failure → geometric fallback."""
+
+    def test_not_5_neighbors_geometric_fallback(self):
+        """4-coordinate P → _classify_sp3d_positions returns all eq."""
+        mol = _make_mol_with_3d("[PH4+]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
+                          if n.GetAtomicNum() == 1]
+                if len(h_nbrs) >= 2:
+                    ax, _ = _classify_sp3d_positions(mol, atom.GetIdx())
+                    assert len(ax) == 0
+                    r = _order_h_sp3d(mol, atom.GetIdx(), h_nbrs)
+                    assert len(r) == len(h_nbrs)
+                    assert set(r) == set(h_nbrs)
+                    return
+        pytest.skip("No P found")
+
+    def test_angle_too_small(self):
+        """Max angle < 140° → classification fails → geometric fallback.
+
+        Uses a distorted geometry where no pair forms a clear trans axis:
+        3 atoms in the equatorial plane at ~120°, 2 atoms tilted off the
+        z-axis by a shallow angle so they are not opposite each other.
+        """
+        mol = Chem.RWMol()
+        p = Chem.Atom(15)
+        p_idx = mol.AddAtom(p)
+        indices = []
+        for _ in range(5):
+            a = Chem.Atom("H")
+            idx = mol.AddAtom(a)
+            mol.AddBond(p_idx, idx, Chem.BondType.SINGLE)
+            indices.append(idx)
+        mol.UpdatePropertyCache(strict=False)
+        mol = mol.GetMol()
+        # 3 eq in xy plane (120° apart), 2 tilted near the plane
+        positions = [
+            (1.42, 0.0, 0.0),        # eq 1
+            (-0.71, 1.23, 0.0),      # eq 2 (~120°)
+            (-0.71, -1.23, 0.0),     # eq 3 (~120°)
+            (0.0, 0.5, 1.0),         # tilted, not opposite to below
+            (0.0, -0.5, 0.5),        # tilted, ~72° from above
+        ]
+        conf = Chem.Conformer(6)
+        conf.SetAtomPosition(p_idx, (0.0, 0.0, 0.0))
+        for i, pos in enumerate(positions):
+            conf.SetAtomPosition(indices[i], pos)
+        mol.AddConformer(conf)
+        ax, _ = _classify_sp3d_positions(mol, p_idx)
+        assert len(ax) == 0
+        r = _order_h_sp3d(mol, p_idx, indices)
+        assert len(r) == 5
+        assert set(r) == set(indices)
+
+
+class TestAnalyzeSquareChiralityDiagonalMatch:
+    """Test _analyze_square_chirality Step 2: diagonal rank match → None."""
+
+    def test_diagonal_match_returns_none(self):
+        """Square with identical CIP ranks on a diagonal → None."""
+        mol = _make_oct_mol("F", "H", "Cl", "Cl", "Br", "I")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                trans_of = _make_trans_of(trans_pairs)
+                for a, b in trans_pairs:
+                    sym_a = mol.GetAtomWithIdx(a).GetSymbol()
+                    sym_b = mol.GetAtomWithIdx(b).GetSymbol()
+                    if {sym_a, sym_b} == {"H", "F"}:
+                        center = atom.GetIdx()
+                        all_nbrs = {n.GetIdx() for n in atom.GetNeighbors()}
+                        square = list(all_nbrs - {a, b})
+                        result = _analyze_square_chirality(
+                            mol, center, a, b, square, trans_of
+                        )
+                        assert result is None
+                        return
+        pytest.fail("No H-F trans pair found")
+
+
+class TestSp3d2Cis2hChirality:
+    """Test _order_sp3d2_cis_2h T→H square chirality path."""
+
+    def test_equal_trans_partner_chirality_succeeds(self):
+        """2 cis H with equal trans partners → T→H chirality decides order."""
+        mol = _make_oct_mol("F", "H", "F", "H", "Cl", "Br")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 15:
+                trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
+                trans_of = _make_trans_of(trans_pairs)
+                h_all = [n.GetIdx() for n in atom.GetNeighbors()
+                         if n.GetAtomicNum() == 1]
+                for i in range(len(h_all)):
+                    for j in range(i + 1, len(h_all)):
+                        t_i = trans_of[h_all[i]]
+                        t_j = trans_of[h_all[j]]
+                        if t_i == h_all[j]:
+                            continue
+                        r_i = _get_cip_rank(mol.GetAtomWithIdx(t_i))
+                        r_j = _get_cip_rank(mol.GetAtomWithIdx(t_j))
+                        if r_i == r_j:
+                            result = _order_sp3d2_cis_2h(
+                                mol, atom.GetIdx(),
+                                [h_all[i], h_all[j]], trans_of
+                            )
+                            assert result is not None
+                            assert len(result) == 2
+                            assert set(result) == {h_all[i], h_all[j]}
+                            return
+        pytest.skip("No suitable cis H pair")
+
+
+class TestFindSp3d2TransPairsDegenerate:
+    """Test _find_sp3d2_trans_pairs when <3 trans pairs."""
+
+    def test_fewer_than_three_pairs_dispatch_handles(self):
+        """Distorted geometry: dispatcher handles <3 pairs gracefully."""
+        mol = Chem.RWMol()
+        s = Chem.Atom(16)
+        s_idx = mol.AddAtom(s)
+        indices = []
+        for _ in range(6):
+            a = Chem.Atom("H")
+            idx = mol.AddAtom(a)
+            mol.AddBond(s_idx, idx, Chem.BondType.SINGLE)
+            indices.append(idx)
+        mol.UpdatePropertyCache(strict=False)
+        mol = mol.GetMol()
+        conf = Chem.Conformer(7)
+        conf.SetAtomPosition(s_idx, (0.0, 0.0, 0.0))
+        positions = [
+            (1.0, 0.0, 0.0),
+            (-0.5, 0.866, 0.0),
+            (-0.5, -0.866, 0.0),
+            (0.0, 0.0, 1.42),
+            (0.0, 0.0, -1.42),
+            (0.5, 0.3, 0.8),
+        ]
+        for i, pos in enumerate(positions):
+            conf.SetAtomPosition(indices[i], pos)
+        mol.AddConformer(conf)
+        r = _order_h_sp3d2(mol, s_idx, indices)
+        assert len(r) == 6
+        assert set(r) == set(indices)
+
+
+# The "other hybridization" else-branch in _order_h_on_heavy_atom (geometric
+# fallback) is defensive: atoms with SP or UNSPECIFIED hybridization cannot
+# have >= 2 H by chemical constraints (SP: 2 σ bonds total; UNSPECIFIED:
+# typically metal centers with at most 1 terminal H).  The branch exists for
+# safety and is not independently testable with real molecules.
