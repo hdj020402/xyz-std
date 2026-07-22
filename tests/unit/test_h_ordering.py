@@ -1785,11 +1785,6 @@ class TestOrderHSp3d24hNonHCis:
         pytest.fail("No octahedral center found")
 
 
-# =============================================================================
-# Common Utility Function Tests
-# =============================================================================
-
-
 class TestSignedAngleBetween:
     """Tests for _signed_angle_between."""
 
@@ -2096,11 +2091,6 @@ class TestGetCipRank:
                 return
 
 
-# =============================================================================
-# Branch Coverage Tests
-# =============================================================================
-
-
 class TestCumuleneWalkFailure:
     """Test _order_2h_cumulene when walk returns far_subs empty."""
 
@@ -2318,3 +2308,150 @@ class TestFindSp3d2TransPairsDegenerate:
 # have >= 2 H by chemical constraints (SP: 2 σ bonds total; UNSPECIFIED:
 # typically metal centers with at most 1 terminal H).  The branch exists for
 # safety and is not independently testable with real molecules.
+
+
+class TestOrder2hCumuleneDirect:
+    """Direct tests for _order_2h_cumulene (odd/even sp_count paths)."""
+
+    def test_odd_sp_count_r_a_s_a(self):
+        """Allene with asymmetric far-end: odd sp → R_a/S_a ordering."""
+        mol = _make_mol_from_xyz("C=C=C(F)Br")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    if mol.GetAtomWithIdx(partner).GetHybridization() == Chem.HybridizationType.SP:
+                        h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                        result = _order_2h_cumulene(
+                            mol, atom.GetIdx(), partner, [h1, h2]
+                        )
+                        assert result is not None
+                        assert len(result) == 2
+                        assert set(result) == {h1, h2}
+                        # Should be deterministic
+                        r2 = _order_2h_cumulene(
+                            mol, atom.GetIdx(), partner, [h1, h2]
+                        )
+                        assert result == r2
+                        return
+        pytest.fail("No allene =CH2 found")
+
+    def test_even_sp_count_pro_z_e(self):
+        """Butatriene with asymmetric far-end: even sp → Z/E ordering."""
+        mol = _make_cumulene_mol("C=C=C=CF")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    if mol.GetAtomWithIdx(partner).GetHybridization() == Chem.HybridizationType.SP:
+                        h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                        result = _order_2h_cumulene(
+                            mol, atom.GetIdx(), partner, [h1, h2]
+                        )
+                        assert result is not None
+                        assert len(result) == 2
+                        assert set(result) == {h1, h2}
+                        return
+        pytest.fail("No butatriene =CH2 found")
+
+    def test_unsubstituted_returns_sorted(self):
+        """H2C=C=CH2: far-end H equivalent → sorted."""
+        mol = _make_mol_from_xyz("C=C=C")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() != 6:
+                continue
+            h_nbrs = [n for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+            if len(h_nbrs) != 2:
+                continue
+            for bond in atom.GetBonds():
+                if bond.GetBondTypeAsDouble() == 2.0:
+                    partner = bond.GetOtherAtomIdx(atom.GetIdx())
+                    if mol.GetAtomWithIdx(partner).GetHybridization() == Chem.HybridizationType.SP:
+                        h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
+                        result = _order_2h_cumulene(
+                            mol, atom.GetIdx(), partner, [h1, h2]
+                        )
+                        assert result == sorted([h1, h2])
+                        return
+        pytest.fail("No allene =CH2 found")
+
+
+class TestOrderHGeometricDirect:
+    """Direct tests for _order_h_geometric (all z_axis selection paths)."""
+
+    def test_explicit_z_axis(self):
+        """z_axis provided → all H ordered by CCW projection."""
+        mol = _make_mol_with_3d("CC")  # ethane: methyl with 3H
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 6:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
+                          if n.GetAtomicNum() == 1]
+                if len(h_nbrs) == 3:
+                    z = np.array([0.0, 0.0, 1.0])
+                    r = _order_h_geometric(mol, atom.GetIdx(), h_nbrs, z_axis=z)
+                    assert len(r) == 3
+                    assert set(r) == set(h_nbrs)
+                    r2 = _order_h_geometric(mol, atom.GetIdx(), h_nbrs, z_axis=z)
+                    assert r == r2
+                    return
+        pytest.fail("No methyl group found")
+
+    def test_non_h_neighbor_case_b(self):
+        """No z_axis + non-H neighbor → non-H as ref, all H CCW."""
+        mol = _make_mol_with_3d("CCO")  # ethanol
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 6:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
+                          if n.GetAtomicNum() == 1]
+                non_h = [n for n in atom.GetNeighbors() if n.GetAtomicNum() != 1]
+                if len(h_nbrs) == 2 and len(non_h) == 2:
+                    # CH2 with 2 non-H → sp3 4-coordinate Case B
+                    r = _order_h_geometric(mol, atom.GetIdx(), h_nbrs)
+                    assert len(r) == 2
+                    assert set(r) == set(h_nbrs)
+                    r2 = _order_h_geometric(mol, atom.GetIdx(), list(reversed(h_nbrs)))
+                    assert r == r2
+                    return
+        pytest.fail("No CH2 with non-H neighbors found")
+
+    def test_3_coordinate_lp(self):
+        """No z_axis + 3-coordinate → LP as z_axis, all H CCW."""
+        mol = _make_mol_with_3d("[SH3+]")
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 16:
+                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
+                          if n.GetAtomicNum() == 1]
+                assert len(h_nbrs) == 3
+                r = _order_h_geometric(mol, atom.GetIdx(), h_nbrs)
+                assert len(r) == 3
+                assert set(r) == set(h_nbrs)
+                r2 = _order_h_geometric(mol, atom.GetIdx(), list(reversed(h_nbrs)))
+                assert r == r2
+                return
+        pytest.fail("No S with 3H found")
+
+    def test_min_idx_h_case_a(self):
+        """No z_axis + no non-H + 4-coordinate → min-idx H first."""
+        mol = _make_mol_with_3d("C")  # CH4
+        c_idx = 0
+        h_nbrs = [n.GetIdx() for n in mol.GetAtomWithIdx(c_idx).GetNeighbors()
+                  if n.GetAtomicNum() == 1]
+        assert len(h_nbrs) == 4
+        r = _order_h_geometric(mol, c_idx, h_nbrs)
+        assert len(r) == 4
+        assert set(r) == set(h_nbrs)
+        # Deterministic
+        r2 = _order_h_geometric(mol, c_idx, list(reversed(h_nbrs)))
+        assert r == r2
+        # min-idx H should be first
+        assert r[0] == min(h_nbrs)
