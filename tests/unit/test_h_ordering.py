@@ -35,39 +35,11 @@ from xyz_std.h_ordering import (
 from xyz_std.io import xyz_to_rdkit_mol
 
 
-def _make_mol_with_3d(smiles: str, seed: int = 42) -> Chem.Mol:
-    """Helper: SMILES -> Mol via RDKit Embed (no XYZ roundtrip).
-
-    Uses RDKit directly because some hypervalent molecules ([SH6], [PH5])
-    cannot survive XYZ → backend → RDKit roundtrip (OpenBabel corrupts
-    connectivity; RDKit backend requires formal charges not present in XYZ).
-    _ensure_cip_ranks patches _CIPRank for symmetric molecules where RDKit
-    alone would skip it (OpenBabel always provides _CIPRank in production).
-    """
-    mol = Chem.MolFromSmiles(smiles)
-    mol = Chem.AddHs(mol)
-    AllChem.EmbedMolecule(mol, randomSeed=seed)
-    Chem.AssignAtomChiralTagsFromStructure(mol)
-    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
-    _ensure_cip_ranks(mol)
-    return mol
-
-
-def _ensure_cip_ranks(mol: Chem.Mol) -> None:
-    """Pre-assign _CIPRank=0 to atoms that RDKit skipped (symmetric molecules)."""
-    for atom in mol.GetAtoms():
-        if '_CIPRank' not in atom.GetPropsAsDict():
-            atom.SetIntProp('_CIPRank', 0)
-
-
 def _make_mol_from_xyz(smiles: str, seed: int = 42) -> Chem.Mol:
-    """Helper: SMILES -> XYZ -> xyz_to_rdkit_mol (matches production pipeline).
+    """SMILES -> Mol via production pipeline (XYZ -> OpenBabel -> RDKit).
 
-    Generates 3D coordinates via RDKit embedding, serializes to XYZ, then
-    parses through the production xyz_to_rdkit_mol with OpenBabel backend.
-    This ensures _CIPRank is available for all molecule types including
-    allenes (axial chirality), because OpenBabel includes CIP information
-    in the MOL block.
+    Matches standardize_xyz: OpenBabel first, fall back to RDKit on
+    AtomValenceException / RuntimeError (which includes missing _CIPRank).
     """
     mol = Chem.MolFromSmiles(smiles)
     mol = Chem.AddHs(mol)
@@ -80,19 +52,12 @@ def _make_mol_from_xyz(smiles: str, seed: int = 42) -> Chem.Mol:
         sym = mol.GetAtomWithIdx(i).GetSymbol()
         lines.append(f"{sym} {pos.x:.6f} {pos.y:.6f} {pos.z:.6f}")
     xyz_str = "\n".join(lines) + "\n"
-    # OpenBabel first (matches production), fall back to RDKit if it fails
+
     try:
-        mol_ob = xyz_to_rdkit_mol(xyz_str, backend="openbabel")
-        # OpenBabel may preserve atom count but corrupt connectivity
-        # (e.g. [SH6] gets only 2 S-H bonds).  Detect via neighbor count.
-        if mol_ob.GetNumAtoms() != n:
-            raise ValueError("wrong atom count")
-        heavy = [a for a in mol_ob.GetAtoms() if a.GetAtomicNum() != 1]
-        if any(len(a.GetNeighbors()) != mol.GetAtomWithIdx(a.GetIdx()).GetDegree()
-               for a in heavy):
-            raise ValueError("corrupted connectivity")
+        mol_ob = xyz_to_rdkit_mol(xyz_str)
     except Exception:
         mol_ob = xyz_to_rdkit_mol(xyz_str, backend="rdkit")
+
     Chem.AssignAtomChiralTagsFromStructure(mol_ob)
     Chem.AssignStereochemistry(mol_ob, cleanIt=True, force=True)
     return mol_ob
@@ -101,7 +66,7 @@ def _make_mol_from_xyz(smiles: str, seed: int = 42) -> Chem.Mol:
 class TestOrderHOnHeavyAtom:
     def test_two_h_on_oxygen(self):
         """Two H on O should both be returned."""
-        mol = _make_mol_with_3d("O")  # water: O with 2H
+        mol = _make_mol_from_xyz("O")  # water: O with 2H
         # Find O atom
         o_idx = None
         for atom in mol.GetAtoms():
@@ -119,13 +84,13 @@ class TestOrderHOnHeavyAtom:
 
     def test_zero_h(self):
         """Empty list should return empty."""
-        mol = _make_mol_with_3d("C")
+        mol = _make_mol_from_xyz("C")
         result = _order_h_on_heavy_atom(mol, 0, [])
         assert result == []
 
     def test_one_h(self):
         """Single H in list should return list of length 1."""
-        mol = _make_mol_with_3d("C")
+        mol = _make_mol_from_xyz("C")
         c_idx = 0
         h_indices = [
             n.GetIdx() for n in mol.GetAtomWithIdx(c_idx).GetNeighbors()
@@ -137,7 +102,7 @@ class TestOrderHOnHeavyAtom:
 
     def test_methyl_3h_returns_all(self):
         """Methyl group: 3H should all be returned."""
-        mol = _make_mol_with_3d("CC")  # ethane
+        mol = _make_mol_from_xyz("CC")  # ethane
         # Find a carbon with 3H neighbors
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 6:
@@ -155,7 +120,7 @@ class TestOrderHOnHeavyAtom:
         # Use 2-butanol for a true prochiral center: CH3-*CH(OH)-CH2-CH3
         # The *CH has only 1H, not 2H. Need a prochiral CH2.
         # Butanone: CH3-CO-CH2-CH3, the CH2 is prochiral (adjacent to C=O and CH3)
-        mol = _make_mol_with_3d("CCCC")  # butane: C2 has 2H
+        mol = _make_mol_from_xyz("CCCC")  # butane: C2 has 2H
         # C2 in butane: neighbors are C1, C3, H, H — C1 and C3 are both CH3/CH2
         # Actually C1-C2-C3-C4, C2 has C1(CH3), C3(CH2CH3), H, H — these H ARE prochiral
         c2_idx = None
@@ -181,7 +146,7 @@ class TestOrderHOnHeavyAtom:
 
     def test_methane_4h(self):
         """Methane: 4H on single C, all equivalent."""
-        mol = _make_mol_with_3d("C")
+        mol = _make_mol_from_xyz("C")
         c_idx = 0
         h_indices = [
             n.GetIdx() for n in mol.GetAtomWithIdx(c_idx).GetNeighbors()
@@ -197,7 +162,7 @@ class TestOrder2hSp3:
     def test_prochiral_center(self):
         """Prochiral CH2 between different groups should give R/S ordering."""
         # 2-chloroethanol: Cl-CH2-CH2-OH — the CH2 near Cl has Cl + CH2OH + H + H
-        mol = _make_mol_with_3d("ClCCO")
+        mol = _make_mol_from_xyz("ClCCO")
         # Find the C bonded to Cl with 2H
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
@@ -216,7 +181,7 @@ class TestOrder2hSp3:
     def test_equivalent_h_returns_sorted(self):
         """Truly equivalent H (symmetric center) should return sorted list."""
         # Propane central CH2: CH3-CH2-CH3, both sides are CH3 (equivalent)
-        mol = _make_mol_with_3d("CCC")
+        mol = _make_mol_from_xyz("CCC")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
                 continue
@@ -273,7 +238,7 @@ class TestOrder2hSp2:
     def test_terminal_alkene_asymmetric(self):
         """Propene CH3-CH=CH2: partner has CH3(rank 3) and H(rank 2),
         CH3 should be picked as reference, sp2 ordering should succeed."""
-        mol = _make_mol_with_3d("CC=C")
+        mol = _make_mol_from_xyz("CC=C")
 
         # Find =CH2 carbon with 2H and a double bond
         for atom in mol.GetAtoms():
@@ -295,7 +260,7 @@ class TestOrder2hSp2:
 
     def test_terminal_alkene_deterministic(self):
         """Same input should always produce same output."""
-        mol = _make_mol_with_3d("CC=C", seed=42)
+        mol = _make_mol_from_xyz("CC=C", seed=42)
 
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
@@ -316,7 +281,7 @@ class TestOrder2hSp2:
 
     def test_terminal_alkene_input_order_independent(self):
         """Swapping h1/h2 input should swap the output."""
-        mol = _make_mol_with_3d("CC=C")
+        mol = _make_mol_from_xyz("CC=C")
 
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
@@ -340,7 +305,7 @@ class TestOrder2hSp2:
     def test_symmetric_partner_returns_sorted(self):
         """Isobutene (CH3)2C=CH2: partner has 2 identical CH3 substituents,
         sp2 CIP should return sorted (H are truly equivalent)."""
-        mol = _make_mol_with_3d("CC(C)=C")
+        mol = _make_mol_from_xyz("CC(C)=C")
 
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
@@ -363,7 +328,7 @@ class TestOrder2hSp2:
     def test_via_order_h_on_heavy_atom(self):
         """Full _order_h_on_heavy_atom on propene =CH2 should return
         deterministic order via sp2 CIP path (not geometric fallback)."""
-        mol = _make_mol_with_3d("CC=C")
+        mol = _make_mol_from_xyz("CC=C")
 
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
@@ -756,7 +721,7 @@ class TestOrder2hSignedVolume:
     def test_phosphine_prochiral(self):
         """CH3-PH2: P with 3 neighbors (C, H, H) — signed volume should
         infer lone pair and determine pro-R/pro-S."""
-        mol = _make_mol_with_3d("CP")
+        mol = _make_mol_from_xyz("CP")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -770,7 +735,7 @@ class TestOrder2hSignedVolume:
 
     def test_phosphine_deterministic(self):
         """Same PH2 should always produce same output."""
-        mol = _make_mol_with_3d("CP")
+        mol = _make_mol_from_xyz("CP")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -784,7 +749,7 @@ class TestOrder2hSignedVolume:
 
     def test_phosphine_input_order_independent(self):
         """Swapping h1/h2 input should swap output."""
-        mol = _make_mol_with_3d("CP")
+        mol = _make_mol_from_xyz("CP")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -799,7 +764,7 @@ class TestOrder2hSignedVolume:
 
     def test_via_order_2h_sp3(self):
         """_order_2h_sp3 should fall back to signed volume for PH2."""
-        mol = _make_mol_with_3d("CP")
+        mol = _make_mol_from_xyz("CP")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -813,7 +778,7 @@ class TestOrder2hSignedVolume:
     def test_via_order_h_on_heavy_atom(self):
         """Full _order_h_on_heavy_atom on CH3-PH2 should use signed volume
         fallback and produce deterministic output."""
-        mol = _make_mol_with_3d("CP")
+        mol = _make_mol_from_xyz("CP")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -828,7 +793,7 @@ class TestOrder2hSignedVolume:
 
     def test_equivalent_sih2_returns_sorted(self):
         """Symmetric Si center (CH3-SiH2-CH3) should return sorted."""
-        mol = _make_mol_with_3d("C[SiH2]C")
+        mol = _make_mol_from_xyz("C[SiH2]C")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 14:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -841,7 +806,7 @@ class TestOrder2hSignedVolume:
 
     def test_h2s_returns_sorted(self):
         """H2S (2-coordinate, 2 lone pairs) should return sorted."""
-        mol = _make_mol_with_3d("[SH2]")
+        mol = _make_mol_from_xyz("[SH2]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 16:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -858,7 +823,7 @@ class TestHeavyAtomWithManyH:
 
     def test_phosphonium_4h(self):
         """[PH4]+: 4 equivalent H → deterministic CCW order."""
-        mol = _make_mol_with_3d("[PH4+]")
+        mol = _make_mol_from_xyz("[PH4+]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -873,7 +838,7 @@ class TestHeavyAtomWithManyH:
 
     def test_sulfonium_3h(self):
         """[SH3]+: 3 equivalent H → deterministic CCW order."""
-        mol = _make_mol_with_3d("[SH3+]")
+        mol = _make_mol_from_xyz("[SH3+]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 16:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -888,7 +853,7 @@ class TestHeavyAtomWithManyH:
 
     def test_silane_4h(self):
         """SiH4: 4 equivalent H → deterministic CCW order."""
-        mol = _make_mol_with_3d("[SiH4]")
+        mol = _make_mol_from_xyz("[SiH4]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 14:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -903,7 +868,7 @@ class TestHeavyAtomWithManyH:
 
     def test_methyl_phosphonium_3h(self):
         """CH3-PH3+: 3 H with one non-H neighbor → CCW order."""
-        mol = _make_mol_with_3d("C[PH3+]")
+        mol = _make_mol_from_xyz("C[PH3+]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -919,7 +884,7 @@ class TestHeavyAtomWithManyH:
     def test_ph5_5h(self):
         """PH5: 5 H in trigonal bipyramidal → deterministic CCW order.
         Symmetric molecules get _CIPRank=0 preset, which is correct for equivalent H."""
-        mol = _make_mol_with_3d("[PH5]")
+        mol = _make_mol_from_xyz("[PH5]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -938,7 +903,7 @@ class TestClassifySp3dPositions:
 
     def test_ph5_axial_equatorial_separation(self):
         """PH5: 5 H should be classified as 2 axial + 3 equatorial."""
-        mol = _make_mol_with_3d("[PH5]")
+        mol = _make_mol_from_xyz("[PH5]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 assert atom.GetHybridization() == Chem.HybridizationType.SP3D
@@ -950,7 +915,7 @@ class TestClassifySp3dPositions:
 
     def test_ph5_axial_angle_near_180(self):
         """Axial pair should have bond angle near 180 degrees."""
-        mol = _make_mol_with_3d("[PH5]")
+        mol = _make_mol_from_xyz("[PH5]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 axial, _ = _classify_sp3d_positions(mol, atom.GetIdx())
@@ -1010,7 +975,7 @@ class TestOrderHSp3d:
 
     def test_fph4_via_order_h_on_heavy_atom(self):
         """FPH4: dispatch should detect SP3D hybridization."""
-        mol = _make_mol_with_3d("F[PH4]")
+        mol = _make_mol_from_xyz("F[PH4]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -1036,10 +1001,14 @@ class TestOrderHSp3d2:
     """Tests for _order_h_sp3d2 (octahedral H ordering)."""
 
     def test_sh6_via_order_h_on_heavy_atom(self):
-        """SH6: symmetric octahedral → geometric CCW (all positions equivalent)."""
-        mol = _make_mol_with_3d("[SH6]")
+        """SH6-like: octahedral with 6 H → geometric CCW (all equivalent).
+
+        Uses _make_oct_mol because [SH6] cannot survive the XYZ → OpenBabel
+        roundtrip (both backends corrupt hypervalent connectivity).
+        """
+        mol = _make_oct_mol("H", "H", "H", "H", "H", "H")
         for atom in mol.GetAtoms():
-            if atom.GetAtomicNum() == 16:
+            if atom.GetAtomicNum() == 15:
                 h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_indices)
                 r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_indices)))
@@ -1047,11 +1016,11 @@ class TestOrderHSp3d2:
                 assert set(r1) == set(h_indices)
                 assert r1 == r2
                 return
-        pytest.fail("No S with 6H found")
+        pytest.fail("No P with 6H found in oct mol")
 
     def test_sh6_deterministic(self):
         """SH6: geometric CCW should be deterministic."""
-        mol = _make_mol_with_3d("[SH6]")
+        mol = _make_mol_from_xyz("[SH6]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 16:
                 h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -1068,7 +1037,7 @@ class TestHybridizationDispatch:
     def test_sp3_centers_use_sp3_path(self):
         """CH4, CH3-CH3: SP3 centers should use _order_h_sp3."""
         for smi in ["C", "CC"]:
-            mol = _make_mol_with_3d(smi)
+            mol = _make_mol_from_xyz(smi)
             for atom in mol.GetAtoms():
                 if atom.GetAtomicNum() != 6:
                     continue
@@ -1082,7 +1051,7 @@ class TestHybridizationDispatch:
 
     def test_sp2_centers_use_sp2_path(self):
         """Propene =CH2: SP2 center should use _order_h_sp2."""
-        mol = _make_mol_with_3d("CC=C")
+        mol = _make_mol_from_xyz("CC=C")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
                 continue
@@ -1103,7 +1072,7 @@ class TestHybridizationDispatch:
 
         The plane normal (cross of two B-H bond vectors) must be used as z_axis
         rather than inferring a non-existent lone pair."""
-        mol = _make_mol_with_3d("B")
+        mol = _make_mol_from_xyz("B")
         b_idx = 0
         h_idxs = [n.GetIdx() for n in mol.GetAtomWithIdx(b_idx).GetNeighbors()
                    if n.GetAtomicNum() == 1]
@@ -1122,7 +1091,7 @@ class TestHybridizationDispatch:
     def test_top_level_dispatches_correctly(self):
         """_order_h_on_heavy_atom should route SP2/SP3/SP3D correctly."""
         # SP3: methane
-        mol = _make_mol_with_3d("C")
+        mol = _make_mol_from_xyz("C")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 6:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
@@ -1131,7 +1100,7 @@ class TestHybridizationDispatch:
                 break
 
         # SP2: propene
-        mol = _make_mol_with_3d("CC=C")
+        mol = _make_mol_from_xyz("CC=C")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
                 continue
@@ -1992,7 +1961,7 @@ class TestDeuterateAtom:
 
     def test_isotope_set_to_2(self):
         """Atom should have isotope=2 after deuteration."""
-        mol = _make_mol_with_3d("CC")
+        mol = _make_mol_from_xyz("CC")
         c_idx = 0
         h_indices = [n.GetIdx() for n in mol.GetAtomWithIdx(c_idx).GetNeighbors()
                      if n.GetAtomicNum() == 1]
@@ -2003,7 +1972,7 @@ class TestDeuterateAtom:
 
     def test_returns_new_mol(self):
         """Original mol should not be modified."""
-        mol = _make_mol_with_3d("CC")
+        mol = _make_mol_from_xyz("CC")
         c_idx = 0
         h_indices = [n.GetIdx() for n in mol.GetAtomWithIdx(c_idx).GetNeighbors()
                      if n.GetAtomicNum() == 1]
@@ -2014,7 +1983,7 @@ class TestDeuterateAtom:
 
     def test_stereochemistry_reassigned(self):
         """Deuterated mol should have _CIPRank available after deuteration."""
-        mol = _make_mol_with_3d("CCO")
+        mol = _make_mol_from_xyz("CCO")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
                 continue
@@ -2051,7 +2020,6 @@ class TestGetZPlusVec:
         mol.AddConformer(conf)
         Chem.AssignAtomChiralTagsFromStructure(mol)
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
-        _ensure_cip_ranks(mol)
         return mol, idx1, idx2
 
     def test_cip_differs(self):
@@ -2065,6 +2033,8 @@ class TestGetZPlusVec:
     def test_cip_equal_canonical_order(self):
         """Same CIP rank + _CanonicalOrder → smaller order is z⁺."""
         mol, a_idx, b_idx = self._make_pair_mol("F", "F")
+        mol.GetAtomWithIdx(a_idx).SetIntProp('_CIPRank', 9)
+        mol.GetAtomWithIdx(b_idx).SetIntProp('_CIPRank', 9)
         mol.GetAtomWithIdx(a_idx).SetIntProp('_CanonicalOrder', 10)
         mol.GetAtomWithIdx(b_idx).SetIntProp('_CanonicalOrder', 5)
         vec = _get_z_plus_vec(mol, (a_idx, b_idx))
@@ -2093,7 +2063,7 @@ class TestGetCipRank:
 
     def test_with_cip_rank(self):
         """Atom with _CIPRank should return its value."""
-        mol = _make_mol_with_3d("C")
+        mol = _make_mol_from_xyz("C")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 6:
                 rank = _get_cip_rank(atom)
@@ -2116,7 +2086,7 @@ class TestCumuleneWalkFailure:
 
     def test_walk_returns_sorted(self):
         """Ketene H2C=C=O: far end is O with no substituents → sorted."""
-        mol = _make_mol_with_3d("C=C=O")
+        mol = _make_mol_from_xyz("C=C=O")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
                 continue
@@ -2139,7 +2109,7 @@ class TestSp2SinglePartnerSub:
 
     def test_partner_single_substituent_normal_alkene(self):
         """Imine HN=CH2: partner N has H substituent → normal alkene logic."""
-        mol = _make_mol_with_3d("C=N")
+        mol = _make_mol_from_xyz("C=N")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() != 6:
                 continue
@@ -2158,29 +2128,12 @@ class TestSp2SinglePartnerSub:
         pytest.skip("No terminal =CH2 found")
 
 
-class TestSp2BH3ThreeH:
-    """Test _order_h_sp2 with 3H and no double bond."""
-
-    def test_sp2_3h_no_double_bond_geometric(self):
-        """sp2 center with 3H and no double bond → geometric via plane normal."""
-        mol = _make_mol_with_3d("[CH3+]")
-        for atom in mol.GetAtoms():
-            if atom.GetAtomicNum() == 6:
-                h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
-                          if n.GetAtomicNum() == 1]
-                if len(h_nbrs) >= 2 and atom.GetHybridization() == Chem.HybridizationType.SP2:
-                    result = _order_h_sp2(mol, atom.GetIdx(), h_nbrs)
-                    assert set(result) == set(h_nbrs)
-                    return
-        pytest.skip("CH3+ not SP2 in RDKit")
-
-
 class TestSp3dClassificationFailure:
     """Tests for SP3D classification failure → geometric fallback."""
 
     def test_not_5_neighbors_geometric_fallback(self):
         """4-coordinate P → _classify_sp3d_positions returns all eq."""
-        mol = _make_mol_with_3d("[PH4+]")
+        mol = _make_mol_from_xyz("[PH4+]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
@@ -2408,7 +2361,7 @@ class TestOrderHGeometricDirect:
 
     def test_explicit_z_axis(self):
         """z_axis provided → all H ordered by CCW projection."""
-        mol = _make_mol_with_3d("CC")  # ethane: methyl with 3H
+        mol = _make_mol_from_xyz("CC")  # ethane: methyl with 3H
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 6:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
@@ -2425,7 +2378,7 @@ class TestOrderHGeometricDirect:
 
     def test_non_h_neighbor_case_b(self):
         """No z_axis + non-H neighbor → non-H as ref, all H CCW."""
-        mol = _make_mol_with_3d("CCO")  # ethanol
+        mol = _make_mol_from_xyz("CCO")  # ethanol
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 6:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
@@ -2443,7 +2396,7 @@ class TestOrderHGeometricDirect:
 
     def test_3_coordinate_lp(self):
         """No z_axis + 3-coordinate → LP as z_axis, all H CCW."""
-        mol = _make_mol_with_3d("[SH3+]")
+        mol = _make_mol_from_xyz("[SH3+]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 16:
                 h_nbrs = [n.GetIdx() for n in atom.GetNeighbors()
@@ -2459,7 +2412,7 @@ class TestOrderHGeometricDirect:
 
     def test_min_idx_h_case_a(self):
         """No z_axis + no non-H + 4-coordinate → min-idx H first."""
-        mol = _make_mol_with_3d("C")  # CH4
+        mol = _make_mol_from_xyz("C")  # CH4
         c_idx = 0
         h_nbrs = [n.GetIdx() for n in mol.GetAtomWithIdx(c_idx).GetNeighbors()
                   if n.GetAtomicNum() == 1]
