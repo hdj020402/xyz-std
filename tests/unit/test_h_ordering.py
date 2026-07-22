@@ -1190,6 +1190,8 @@ def _make_sp3d_mol(ax1_sym, ax2_sym, eq1_sym, eq2_sym, eq3_sym):
     for atom in mol.GetAtoms():
         if '_CIPRank' not in atom.GetPropsAsDict():
             atom.SetIntProp('_CIPRank', 0)
+        if atom.GetAtomicNum() != 1 and '_CanonicalOrder' not in atom.GetPropsAsDict():
+            atom.SetIntProp('_CanonicalOrder', atom.GetAtomicNum())
     return mol
 
 
@@ -1434,6 +1436,8 @@ def _make_oct_mol(*vert_syms):
     for atom in mol.GetAtoms():
         if '_CIPRank' not in atom.GetPropsAsDict():
             atom.SetIntProp('_CIPRank', 0)
+        if atom.GetAtomicNum() != 1 and '_CanonicalOrder' not in atom.GetPropsAsDict():
+            atom.SetIntProp('_CanonicalOrder', atom.GetAtomicNum())
     return mol
 
 

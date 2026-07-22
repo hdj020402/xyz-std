@@ -192,31 +192,67 @@ def _get_z_plus_vec(
 ) -> np.ndarray:
     """Determine the z⁺ direction (unit vector) of a trans/axial pair.
 
-    z⁺ direction: z⁻ → z⁺ along the pair axis. z⁺ end is determined by
-    CIP rank (higher → z⁺), _CanonicalOrder (larger → z⁺), or min index.
+    z⁺ direction: z⁻ → z⁺ along the pair axis.  z⁺ end is determined by:
+      - Both H    → smaller index (has no chemical meaning; deterministic)
+      - H + X     → X (always higher CIP rank than H)
+      - Both X    → CIP rank (higher → z⁺), then _CanonicalOrder (larger → z⁺)
     """
-    r0 = _get_cip_rank(mol.GetAtomWithIdx(pair_indices[0]))
-    r1 = _get_cip_rank(mol.GetAtomWithIdx(pair_indices[1]))
+    a, b = pair_indices
+    a_is_h = mol.GetAtomWithIdx(a).GetAtomicNum() == 1
+    b_is_h = mol.GetAtomWithIdx(b).GetAtomicNum() == 1
 
-    if r0 != r1:
-        z_plus = pair_indices[0] if r0 > r1 else pair_indices[1]
+    if a_is_h and b_is_h:
+        z_plus = a if a < b else b
+    elif a_is_h:
+        z_plus = b  # X > H, X is z⁺
+    elif b_is_h:
+        z_plus = a  # X > H, X is z⁺
     else:
-        # Same CIP rank: use canonical heavy-atom order
-        try:
-            pos0 = mol.GetAtomWithIdx(pair_indices[0]).GetIntProp('_CanonicalOrder')
-            pos1 = mol.GetAtomWithIdx(pair_indices[1]).GetIntProp('_CanonicalOrder')
-            z_plus = pair_indices[0] if pos0 > pos1 else pair_indices[1]
-        except KeyError:
-            # Both are H (not in heavy_order): min original index
-            z_plus = min(pair_indices)
+        # Both heavy atoms: use CIP rank + _CanonicalOrder
+        r0 = _get_cip_rank(mol.GetAtomWithIdx(a))
+        r1 = _get_cip_rank(mol.GetAtomWithIdx(b))
+        if r0 != r1:
+            z_plus = a if r0 > r1 else b
+        else:
+            pos0 = mol.GetAtomWithIdx(a).GetIntProp('_CanonicalOrder')
+            pos1 = mol.GetAtomWithIdx(b).GetIntProp('_CanonicalOrder')
+            z_plus = a if pos0 > pos1 else b
 
-    z_minus = pair_indices[0] if pair_indices[1] == z_plus else pair_indices[1]
+    z_minus = a if b == z_plus else b
 
     conf = mol.GetConformer()
     pos_plus = np.array(conf.GetAtomPosition(z_plus))
     pos_minus = np.array(conf.GetAtomPosition(z_minus))
     vec = pos_plus - pos_minus
     return vec / np.linalg.norm(vec)
+
+
+def _compute_pair_angles(
+    mol: Chem.Mol,
+    center_idx: int
+) -> list[tuple[float, int, int]]:
+    """Return (angle_rad, idx_i, idx_j) for all neighbor pairs, sorted descending."""
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    all_nbrs = list(center_atom.GetNeighbors())
+
+    vecs = {n.GetIdx(): np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+            for n in all_nbrs}
+    nbr_indices = [n.GetIdx() for n in all_nbrs]
+
+    pairs = []
+    for i in range(len(nbr_indices)):
+        for j in range(i + 1, len(nbr_indices)):
+            vi = vecs[nbr_indices[i]]
+            vj = vecs[nbr_indices[j]]
+            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
+            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
+            angle = np.arccos(cos_angle)
+            pairs.append((angle, nbr_indices[i], nbr_indices[j]))
+
+    pairs.sort(key=lambda x: -x[0])
+    return pairs
 
 
 def _order_h_geometric(
@@ -273,34 +309,6 @@ def _order_h_geometric(
 
     h_pos_list = [(h, np.array(conf.GetAtomPosition(h))) for h in h_list]
     return prefix + _order_h_by_angle_projection(center_pos, z_axis, h_pos_list)
-
-
-def _compute_pair_angles(
-    mol: Chem.Mol,
-    center_idx: int
-) -> list[tuple[float, int, int]]:
-    """Return (angle_rad, idx_i, idx_j) for all neighbor pairs, sorted descending."""
-    conf = mol.GetConformer()
-    center_pos = np.array(conf.GetAtomPosition(center_idx))
-    center_atom = mol.GetAtomWithIdx(center_idx)
-    all_nbrs = list(center_atom.GetNeighbors())
-
-    vecs = {n.GetIdx(): np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
-            for n in all_nbrs}
-    nbr_indices = [n.GetIdx() for n in all_nbrs]
-
-    pairs = []
-    for i in range(len(nbr_indices)):
-        for j in range(i + 1, len(nbr_indices)):
-            vi = vecs[nbr_indices[i]]
-            vj = vecs[nbr_indices[j]]
-            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
-            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
-            angle = np.arccos(cos_angle)
-            pairs.append((angle, nbr_indices[i], nbr_indices[j]))
-
-    pairs.sort(key=lambda x: -x[0])
-    return pairs
 
 
 def _walk_cumulene_far_end(
@@ -637,7 +645,6 @@ def _order_sp3d_axial_2h(
 
     # Sort eq by CIP rank descending
     eq_sorted = sorted(eq_indices, key=lambda i: -_get_cip_rank(mol.GetAtomWithIdx(i)))
-    a_idx, b_idx, c_idx = eq_sorted[0], eq_sorted[1], eq_sorted[2]
 
     # Axis direction: from h1 toward h2 (arbitrary initial choice)
     h1_pos = np.array(conf.GetAtomPosition(h1_idx))
@@ -646,7 +653,7 @@ def _order_sp3d_axial_2h(
     z_axis = axis / np.linalg.norm(axis)
 
     # a→b→c CCW when looking from h1 → h2 → h1 is at z⁺
-    if _is_ccw(mol, center_idx, z_axis, (a_idx, b_idx, c_idx)):
+    if _is_ccw(mol, center_idx, z_axis, tuple(eq_sorted)):
         return [h1_idx, h2_idx]
     else:
         return [h2_idx, h1_idx]
@@ -679,7 +686,7 @@ def _order_sp3d_equatorial_2h(
 
     conf = mol.GetConformer()
     center_pos = np.array(conf.GetAtomPosition(center_idx))
-    z_axis = _get_z_plus_vec(mol, (axial_indices[0], axial_indices[1]))
+    z_axis = _get_z_plus_vec(mol, tuple(axial_indices))
 
     ref_idx = [i for i in eq_indices if i not in (h1_idx, h2_idx)][0]
 
@@ -696,46 +703,47 @@ def _order_h_sp3d(
 ) -> list[int]:
     """Order H on an SP3D (trigonal bipyramidal) center.
 
-    Separates axial from equatorial H. Within each group:
-      - ax 2H: equatorial chirality (pro-R/S), equivalent → direct
-      - eq 2H: axial CIP + atan2, equivalent → direct
-      - eq 3H: axial CIP/_CanonicalOrder z⁺ + CCW geometric
-      - eq 1H / ax 1H: direct
-
+    Dispatches by H count first (like SP3D2), so each branch knows the
+    ax/eq H distribution and avoids _get_cip_rank on H-only groups.
     Axial H are ordered before equatorial H in the result.
     """
     axial_nbrs, eq_nbrs = _classify_sp3d_positions(mol, center_idx)
-
-    # Classification failure: fall back to geometric
     if len(axial_nbrs) != 2:
         return _order_h_geometric(mol, center_idx, h_indices)
 
+    n_h = len(h_indices)
     axial_h = [h for h in h_indices if h in axial_nbrs]
     eq_h = [h for h in h_indices if h in eq_nbrs]
 
-    result: list[int] = []
+    if n_h == 2:
+        if len(axial_h) == 2 and len(eq_h) == 0:
+            return _order_sp3d_axial_2h(mol, center_idx, axial_h, eq_nbrs)
+        elif len(axial_h) == 0 and len(eq_h) == 2:
+            return _order_sp3d_equatorial_2h(mol, center_idx, eq_h, axial_nbrs, eq_nbrs)
+        elif len(axial_h) == 1 and len(eq_h) == 1:
+            return sorted(axial_h) + sorted(eq_h)
 
-    # Order axial H group
-    if len(axial_h) == 2:
-        result.extend(_order_sp3d_axial_2h(
-            mol, center_idx, axial_h, eq_nbrs
-        ))
-    elif len(axial_h) == 1:
-        result.extend(axial_h)
+    elif n_h == 3:
+        if len(axial_h) == 2 and len(eq_h) == 1:
+            return _order_sp3d_axial_2h(mol, center_idx, axial_h, eq_nbrs) + eq_h
+        elif len(axial_h) == 1 and len(eq_h) == 2:
+            return axial_h + _order_sp3d_equatorial_2h(mol, center_idx, eq_h, axial_nbrs, eq_nbrs)
+        elif len(axial_h) == 0 and len(eq_h) == 3:
+            z_axis = _get_z_plus_vec(mol, tuple(axial_nbrs))
+            return _order_h_geometric(mol, center_idx, eq_h, z_axis=z_axis)
 
-    # Order equatorial H group
-    if len(eq_h) == 2:
-        result.extend(_order_sp3d_equatorial_2h(
-            mol, center_idx, eq_h, axial_nbrs, eq_nbrs
-        ))
-    elif len(eq_h) == 3:
-        # eq 3H: z⁺ from axial pair, CCW geometric
-        z_axis = _get_z_plus_vec(mol, (axial_nbrs[0], axial_nbrs[1]))
-        result.extend(_order_h_geometric(mol, center_idx, eq_h, z_axis=z_axis))
-    elif len(eq_h) == 1:
-        result.extend(eq_h)
+    elif n_h == 4:
+        if len(axial_h) == 2 and len(eq_h) == 2:
+            return sorted(axial_h) + sorted(eq_h)
+        elif len(axial_h) == 1 and len(eq_h) == 3:
+            z_axis = _get_z_plus_vec(mol, tuple(axial_nbrs))
+            return axial_h + _order_h_geometric(mol, center_idx, eq_h, z_axis=z_axis)
 
-    return result
+    elif n_h == 5:
+        return sorted(axial_h) + _order_h_geometric(
+            mol, center_idx, eq_h,
+            z_axis=_get_z_plus_vec(mol, tuple(axial_nbrs))
+        )
 
 
 def _find_sp3d2_trans_pairs(
@@ -825,8 +833,7 @@ def _analyze_square_chirality(
     z_axis = h_to_pos - h_from_pos
     z_axis = z_axis / np.linalg.norm(z_axis)
 
-    # kept[0], kept[1], kept[2] are in CIP descending order
-    return _is_ccw(mol, center_idx, z_axis, (kept[0], kept[1], kept[2]))
+    return _is_ccw(mol, center_idx, z_axis, tuple(kept))
 
 
 def _order_sp3d2_trans_2h(
