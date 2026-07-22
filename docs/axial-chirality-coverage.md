@@ -13,7 +13,7 @@
 ### 1. 联烯 / 累积烯烃（C=C=C...C=C）
 
 | 子类型 | sp 碳数 | 末端平面关系 | 判断方法 | 代码路径 |
-|--------|---------|-------------|---------|---------|
+| -------- | --------- | ------------- | --------- | --------- |
 | 联烯（如 H2C=C=CHF） | 1（奇） | 垂直 | 投影有符号角度 R_a/S_a | `_order_2h_cumulene` odd |
 | 丁三烯（如 H2C=C=C=CHF） | 2（偶） | 共面 | 二面角 pro-Z/pro-E | `_order_2h_cumulene` even |
 | 更长奇数累积烯 | 奇数 | 垂直 | 同联烯 | 同上 |
@@ -85,4 +85,4 @@
 ## 相关文件
 
 - `src/xyz_std/h_ordering.py`：`_order_2h_cumulene`（联烯/累积烯）、`_order_2h_sp2`（sp2 =CH2）、`_order_2h_sp3`（sp3 -CH2-）
-- `tests/unit/test_h_ordering.py`：`TestTryOrder2hAllene`（奇数 sp_count）、`TestTryOrder2hAlleneEven`（偶数 sp_count）
+- `tests/unit/test_h_ordering.py`：`TestOrder2hAllene`（奇数 sp_count）、`TestOrder2hAlleneEven`（偶数 sp_count）、`TestOrder2hCumuleneDirect`（直接调用 `_order_2h_cumulene`）

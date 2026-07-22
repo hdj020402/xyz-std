@@ -1019,16 +1019,20 @@ class TestOrderHSp3d2:
         pytest.fail("No P with 6H found in oct mol")
 
     def test_sh6_deterministic(self):
-        """SH6: geometric CCW should be deterministic."""
-        mol = _make_mol_from_xyz("[SH6]")
+        """SH6-like: octahedral with 6 equivalent H → deterministic CCW.
+
+        Uses _make_oct_mol because [SH6] cannot survive the XYZ → OpenBabel
+        roundtrip (both backends corrupt hypervalent connectivity).
+        """
+        mol = _make_oct_mol("H", "H", "H", "H", "H", "H")
         for atom in mol.GetAtoms():
-            if atom.GetAtomicNum() == 16:
+            if atom.GetAtomicNum() == 15:
                 h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 r1 = _order_h_sp3d2(mol, atom.GetIdx(), h_indices)
                 r2 = _order_h_sp3d2(mol, atom.GetIdx(), list(reversed(h_indices)))
                 assert r1 == r2
                 return
-        pytest.fail("No S with 6H found")
+        pytest.fail("No P with 6H found in oct mol")
 
 
 class TestHybridizationDispatch:
@@ -2121,10 +2125,15 @@ class TestSp2SinglePartnerSub:
 
 
 class TestSp3dClassificationFailure:
-    """Tests for SP3D classification failure → geometric fallback."""
+    """Tests for SP3D classification failure → RuntimeError.
 
-    def test_not_5_neighbors_geometric_fallback(self):
-        """4-coordinate P → _classify_sp3d_positions returns all eq."""
+    A molecule with SP3D hybridization must have a clear axial pair
+    (>140°). If not, the geometry is severely distorted and we refuse
+    to produce a meaningless result.
+    """
+
+    def test_not_5_neighbors_raises(self):
+        """4-coordinate P → _classify_sp3d_positions returns 0 axial → error."""
         mol = _make_mol_from_xyz("[PH4+]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
@@ -2133,14 +2142,13 @@ class TestSp3dClassificationFailure:
                 if len(h_nbrs) >= 2:
                     ax, _ = _classify_sp3d_positions(mol, atom.GetIdx())
                     assert len(ax) == 0
-                    r = _order_h_sp3d(mol, atom.GetIdx(), h_nbrs)
-                    assert len(r) == len(h_nbrs)
-                    assert set(r) == set(h_nbrs)
+                    with pytest.raises(RuntimeError, match="SP3D"):
+                        _order_h_sp3d(mol, atom.GetIdx(), h_nbrs)
                     return
         pytest.skip("No P found")
 
-    def test_angle_too_small(self):
-        """Max angle < 140° → classification fails → geometric fallback.
+    def test_angle_too_small_raises(self):
+        """Max angle < 140° → classification fails → error.
 
         Uses a distorted geometry where no pair forms a clear trans axis:
         3 atoms in the equatorial plane at ~120°, 2 atoms tilted off the
@@ -2172,9 +2180,8 @@ class TestSp3dClassificationFailure:
         mol.AddConformer(conf)
         ax, _ = _classify_sp3d_positions(mol, p_idx)
         assert len(ax) == 0
-        r = _order_h_sp3d(mol, p_idx, indices)
-        assert len(r) == 5
-        assert set(r) == set(indices)
+        with pytest.raises(RuntimeError, match="SP3D"):
+            _order_h_sp3d(mol, p_idx, indices)
 
 
 class TestAnalyzeSquareChiralityDiagonalMatch:
@@ -2234,10 +2241,10 @@ class TestSp3d2Cis2hChirality:
 
 
 class TestFindSp3d2TransPairsDegenerate:
-    """Test _find_sp3d2_trans_pairs when <3 trans pairs."""
+    """Test _find_sp3d2_trans_pairs when <3 trans pairs → RuntimeError."""
 
-    def test_fewer_than_three_pairs_dispatch_handles(self):
-        """Distorted geometry: dispatcher handles <3 pairs gracefully."""
+    def test_fewer_than_three_pairs_raises(self):
+        """Distorted geometry: <3 trans pairs should raise RuntimeError."""
         mol = Chem.RWMol()
         s = Chem.Atom(16)
         s_idx = mol.AddAtom(s)
@@ -2262,9 +2269,8 @@ class TestFindSp3d2TransPairsDegenerate:
         for i, pos in enumerate(positions):
             conf.SetAtomPosition(indices[i], pos)
         mol.AddConformer(conf)
-        r = _order_h_sp3d2(mol, s_idx, indices)
-        assert len(r) == 6
-        assert set(r) == set(indices)
+        with pytest.raises(RuntimeError, match="SP3D2"):
+            _order_h_sp3d2(mol, s_idx, indices)
 
 
 # The "other hybridization" else-branch in _order_h_on_heavy_atom (geometric

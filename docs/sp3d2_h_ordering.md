@@ -101,7 +101,7 @@ H-X 的 H 环境独特（trans 非 H），作为 ax 排第一。其余 4 个 H�
 
 ```text
 _order_h_sp3d2:
-  _find_sp3d2_trans_pairs → 3 对 trans → trans_of 双向映射
+  _find_sp3d2_trans_pairs → 3 对 trans（<3 → RuntimeError）→ trans_of 双向映射
   分类 trans pairs → hh_pairs / hx_pairs / xx_pairs
 
   n_H == 2:

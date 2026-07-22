@@ -25,7 +25,7 @@ SP2 碳为平面三角形（trigonal planar），3 个 σ 键方向共面呈 120
 | :--- | :--- | :--- | :--- | :--- |
 | 烯烃 =CH₂ | H₂C=CH–R | 2 | 有 | `_order_2h_sp2`（Z/E 或累积烯） |
 | sp2 无双键 | H₂B–R、H₂C⁺–R | 2 | 无 | `sorted`（无 prochiral 参考方向） |
-| sp2 多 H | BH₃ | 3 | 无 | `_order_h_geometric`（CCW 投影） |
+| sp2 多 H | BH₃ | 3 | 无 | `sorted`（3H 在平面正三角形上全部等价） |
 
 ---
 
@@ -140,7 +140,7 @@ sp_count 即为累积双键中 sp 碳的数量：
 
 ## ≥ 3H
 
-sp2 多 H（如 BH₃ 有 3H）→ `_order_h_geometric`（自动选 z 轴 + CCW atan2 投影排序）。
+sp2 为平面正三角形（trigonal planar），3 个 H 化学等价。无需 geometric CCW——直接 `sorted(h_indices)` 即可。
 
 ---
 
@@ -195,12 +195,12 @@ _order_h_sp2(mol, center_idx, h_indices):
       无 → sorted  (sp2 无双键：碳正离子、自由基等)
 
   n_H ≥ 3:
-    _order_h_geometric  (如 BH₃ 有 3H)
+    sorted(h_indices)  (如 BH₃ 有 3H，平面正三角形全部等价)
 
   说明：
   - SP2 ≠ 有双键：sp2 描述轨道几何，双键描述成键类型
   - 无双键的 sp2（碳正离子等）2H 无法用 Z/E 区分，直接 sorted
-  - 多 H sp2（BH₃ 等）fallback 到 geometric CCW 排序
+  - sp2 是平面正三角形，3H 全部化学等价，直接 sorted 即可
   - 累积烯轴向手性（奇数 sp）是 SP2 特有的场景
   - 等价 2H 不需要 geometric，直接 sorted 即可
 ```

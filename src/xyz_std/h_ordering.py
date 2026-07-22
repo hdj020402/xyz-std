@@ -702,7 +702,12 @@ def _order_h_sp3d(
     """
     axial_nbrs, eq_nbrs = _classify_sp3d_positions(mol, center_idx)
     if len(axial_nbrs) != 2:
-        return _order_h_geometric(mol, center_idx, h_indices)
+        raise RuntimeError(
+            f"Atom {center_idx} ({mol.GetAtomWithIdx(center_idx).GetSymbol()}) "
+            f"has hybridization SP3D but position classification failed: "
+            f"got {len(axial_nbrs)} axial neighbors (expected 2). "
+            f"The geometry may be severely distorted."
+        )
 
     n_h = len(h_indices)
     axial_h = [h for h in h_indices if h in axial_nbrs]
@@ -1076,7 +1081,12 @@ def _order_h_sp3d2(
 
     trans_pairs = _find_sp3d2_trans_pairs(mol, center_idx)
     if len(trans_pairs) != 3:
-        return _order_h_geometric(mol, center_idx, h_indices)
+        raise RuntimeError(
+            f"Atom {center_idx} ({mol.GetAtomWithIdx(center_idx).GetSymbol()}) "
+            f"has hybridization SP3D2 but trans-pair detection failed: "
+            f"got {len(trans_pairs)} trans pairs (expected 3). "
+            f"The geometry may be severely distorted."
+        )
 
     trans_of = {}
     for a, b in trans_pairs:

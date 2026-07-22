@@ -32,7 +32,7 @@
 
 ## 1H
 
-单 H 直接返回 `list(h_indices)`，在 `_order_h_sp3` 入口处处理，不进入任何子逻辑。
+单 H 直接返回 `list(h_indices)`，在 `_order_h_on_heavy_atom` 入口处处理，不进入任何子逻辑。
 
 ---
 

@@ -1,5 +1,7 @@
 # `_order_h_geometric` 函数分析与改进方案
 
+> **状态：全部实施完毕。** 本文档记录设计分析与决策过程。最终实现见 `src/xyz_std/h_ordering.py`，各杂化类型详细文档见 `sp2_h_ordering.md` / `sp3_h_ordering.md` / `sp3d_h_ordering.md` / `sp3d2_h_ordering.md`。
+
 ## 原始设计目的
 
 `_order_h_geometric` 最初为 sp3 中心上 ≥3 个等价 H 设计，目标是保证**帧间一致性**。以 R-CH₃ 为例：
@@ -202,16 +204,57 @@ trans 对：1×H-X + 2×H-H。H-X 的 H 唯一（trans 非 H）。
 
 ## 改进要点总结
 
-1. **等价 2H 跳过 geometric**：`_order_h_sp3` / `_order_h_sp2` 中 `try_order` 返回 `None` 时返回 `sorted(h_indices)`，无需 fallback
+以下 7 项均已在 `_order_h_*` 系列函数中实现：
 
-2. **单 H 在调用方处理**：所有 `len(h_indices) <= 1` 的判断上移到各分发函数入口，`_order_h_geometric` 假设输入 `len(h_indices) >= 2`
+1. ✅ **等价 2H 跳过 geometric**：各路径在化学方法返回 `None` 时直接 `sorted(h_indices)`，不 fallback 到 geometric。
 
-3. **移除 ref neighbor 的 idx tiebreak 逻辑**：`max(non_h_neighbors, key=lambda n: (n.GetAtomicNum(), -n.GetIdx()))` 没有实际使用场景——sp3 最多 1 个非 H 邻居无需选，sp3d/sp3d2 应显式用轴向/trans pair 定 z⁺。该逻辑可直接删除
+2. ✅ **单 H 在调用方处理**：`_order_h_on_heavy_atom` 入口 `len(h_indices) <= 1` 直接返回；`_order_h_geometric` 假设输入 ≥ 2。
 
-4. **SP3D eq 3H**：新增显式处理，以轴向 CIP rank 定 z⁺，CCW 排序 eq H
+3. ✅ **移除 ref neighbor 的 idx tiebreak 逻辑**：`_order_h_geometric` 不再使用 `max(non_h_neighbors, key=...)`。sp3 Case B 直接取 `non_h_nbrs[0]`（最多 1 个候选无需选）。
 
-5. **SP3D2 3H fac AAA**：改为 min-idx H 排第一 + 氘代 + cis-2H（与 mer 分支结构平行），不需要 geometric
+4. ✅ **SP3D eq 3H**：`_order_h_sp3d` 以 `_get_z_plus_vec(axial_nbrs)` 定 z⁺，CCW geometric 排序 eq H。
 
-6. **SP3D2 5H / 6H**：显式以 trans pair 定 z⁺，而非依赖 max-Z 自动选择
+5. ✅ **SP3D2 3H fac AAA**：min-idx H 排第一 + `_deuterate_atom` + `_order_sp3d2_cis_2h`，与 mer 分支平行，不需要 geometric。
 
-7. **SP3D / SP3D2 等价 2H**：跳过 geometric，与此规则统一
+6. ✅ **SP3D2 5H / 6H**：显式以 trans pair 经 `_get_z_plus_vec` 定 z⁺，不依赖 max-Z 自动选择。
+
+7. ✅ **SP3D / SP3D2 等价 2H**：所有路径等价时直接 `sorted`，不进入 geometric。
+
+---
+
+## 设计原则：信任杂化，不做几何防御
+
+本项目的 H 排序逻辑基于以下核心假设：
+
+> **RDKit / OpenBabel 给出的原子杂化类型是正确的。**
+
+具体而言：
+
+| 杂化 | 假设的几何 | 说明 |
+| :--- | :--- | :--- |
+| **SP3** | 正四面体（109.5°） | 4 配位，3 配位有孤对电子 |
+| **SP2** | 平面正三角形（120°） | 3 配位共面，含双键或碳正离子/自由基/BH₃ 等 |
+| **SP3D** | 三角双锥（TBP） | 2 轴向（180°）+ 3 赤道（120°） |
+| **SP3D2** | 正八面体 | 3 对 trans 对（180°），12 个 cis 角（90°） |
+
+### 推论
+
+1. **不做几何回退**：代码不在化学排序失败时自动回退到 geometric CCW——回退会**静默掩盖**杂化分配错误或分子质量问题。如果一个 sp3 中心无法通过 CIP 方法区分 2H，那 2H 就是化学等价的→直接 `sorted`，而非 geometric。
+
+2. **分类失败即报错**：`_classify_sp3d_positions`（阈值 140°）和 `_find_sp3d2_trans_pairs`（阈值 150°）是异常检测——RDKit 分配了杂化类型但几何中找不到对应的结构特征，说明数据有问题。此时**抛出 `RuntimeError` 而非静默回退**，避免将无意义的结果写入输出。
+
+3. **不处理退化/近似几何**：分子要么符合理想化学几何（由 RDKit/OpenBabel 保证），要么应该在管线更早的阶段被拒绝/修正。在 H 排序层做几何容错是错误的位置。
+
+4. **geometric CCW 只用于 ≥3H 等价场景**：3+ 个化学等价的 H 没有化学优先级可依，geometric CCW 提供帧间一致的确定性排序。这不是"回退"——这是该场景下的正确方法。
+
+### 分类失败是真正的异常
+
+`_classify_sp3d_positions` 和 `_find_sp3d2_trans_pairs` 中的角度阈值（140°/150°）是**异常检测**，不是容错：
+
+- 若 RDKit 分配了 SP3D 但几何中找不到一对 >140° 的对位原子 → 数据有问题（如严重扭曲的几何）
+- 若 RDKit 分配了 SP3D2 但找不到 3 对 >150° 的 trans 对 → 数据有问题
+- 此时**抛出 `RuntimeError`**，而非静默 fallback 到 geometric CCW——静默回退会掩盖问题，产生没有化学意义的排序结果
+
+### 与早期设计的区别
+
+早期版本在多个位置包含 defensive geometric fallback（如"sp2 双键 partner 无取代基→geometric"、"SP3D2 <3 trans pairs→geometric"）。这些已全部替换为精确的化学判断：等价→ `sorted`，不等价→化学方法处理。结果更正确、更可解释。

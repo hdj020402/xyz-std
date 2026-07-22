@@ -33,7 +33,7 @@
 
 ## 1H
 
-单 H 直接返回 `list(h_indices)`，在 `_order_h_sp3d` 入口处处理，不进入任何子逻辑。
+单 H 直接返回 `list(h_indices)`，在 `_order_h_on_heavy_atom` 入口处处理，不进入任何子逻辑。
 
 ---
 
@@ -193,7 +193,7 @@ z⁺ 决定规则：
 - 恰好 5 个邻居
 - 存在夹角 >140° 的 axial pair
 
-若不满足（邻居数 ≠ 5 或最大夹角 < 140°），全部邻居视为 equatorial，fallback 到 `_order_h_geometric(mol, center_idx, h_indices)` 做纯几何排序。
+若不满足（邻居数 ≠ 5 或最大夹角 < 140°），说明几何与 SP3D 杂化标签矛盾，数据有问题。此时**抛出 `RuntimeError`**，而非静默回退。
 
 ---
 
@@ -202,7 +202,7 @@ z⁺ 决定规则：
 ```text
 _order_h_sp3d:
   _classify_sp3d_positions → axial_nbrs, eq_nbrs
-  分类失败 (≠2 axial) → fallback _order_h_geometric
+  分类失败 (≠2 axial) → raise RuntimeError
 
   axial_h = H ∩ axial_nbrs
   eq_h    = H ∩ eq_nbrs
