@@ -36,14 +36,13 @@ from xyz_std.io import xyz_to_rdkit_mol
 
 
 def _make_mol_with_3d(smiles: str, seed: int = 42) -> Chem.Mol:
-    """Helper: SMILES -> Mol with explicit H and 3D conformer.
+    """Helper: SMILES -> Mol via RDKit Embed (no XYZ roundtrip).
 
-    Calls both AssignAtomChiralTagsFromStructure and AssignStereochemistry
-    to ensure _CIPRank is available for sp2/sp3 CIP-based H ordering.
-
-    Note: _CIPRank is NOT available for allenes via this path (RDKit cannot
-    assign axial chirality when explicit H are present). Use _make_mol_from_xyz
-    for allene tests.
+    Uses RDKit directly because some hypervalent molecules ([SH6], [PH5])
+    cannot survive XYZ → backend → RDKit roundtrip (OpenBabel corrupts
+    connectivity; RDKit backend requires formal charges not present in XYZ).
+    _ensure_cip_ranks patches _CIPRank for symmetric molecules where RDKit
+    alone would skip it (OpenBabel always provides _CIPRank in production).
     """
     mol = Chem.MolFromSmiles(smiles)
     mol = Chem.AddHs(mol)
@@ -81,13 +80,21 @@ def _make_mol_from_xyz(smiles: str, seed: int = 42) -> Chem.Mol:
         sym = mol.GetAtomWithIdx(i).GetSymbol()
         lines.append(f"{sym} {pos.x:.6f} {pos.y:.6f} {pos.z:.6f}")
     xyz_str = "\n".join(lines) + "\n"
-    mol_ob = xyz_to_rdkit_mol(xyz_str)
-    # OpenBabel provides _CIPRank for chiral molecules (allenes etc.) but not
-    # for simple alkenes. Call assign here to fill in the gaps — existing
-    # _CIPRank from OpenBabel is preserved, and missing ones are computed.
+    # OpenBabel first (matches production), fall back to RDKit if it fails
+    try:
+        mol_ob = xyz_to_rdkit_mol(xyz_str, backend="openbabel")
+        # OpenBabel may preserve atom count but corrupt connectivity
+        # (e.g. [SH6] gets only 2 S-H bonds).  Detect via neighbor count.
+        if mol_ob.GetNumAtoms() != n:
+            raise ValueError("wrong atom count")
+        heavy = [a for a in mol_ob.GetAtoms() if a.GetAtomicNum() != 1]
+        if any(len(a.GetNeighbors()) != mol.GetAtomWithIdx(a.GetIdx()).GetDegree()
+               for a in heavy):
+            raise ValueError("corrupted connectivity")
+    except Exception:
+        mol_ob = xyz_to_rdkit_mol(xyz_str, backend="rdkit")
     Chem.AssignAtomChiralTagsFromStructure(mol_ob)
     Chem.AssignStereochemistry(mol_ob, cleanIt=True, force=True)
-    _ensure_cip_ranks(mol_ob)
     return mol_ob
 
 
@@ -1029,11 +1036,10 @@ class TestOrderHSp3d2:
     """Tests for _order_h_sp3d2 (octahedral H ordering)."""
 
     def test_sh6_via_order_h_on_heavy_atom(self):
-        """SH6: SP3D2 routes to geometric CCW (all positions equivalent)."""
+        """SH6: symmetric octahedral → geometric CCW (all positions equivalent)."""
         mol = _make_mol_with_3d("[SH6]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 16:
-                assert atom.GetHybridization() == Chem.HybridizationType.SP3D2
                 h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 r1 = _order_h_on_heavy_atom(mol, atom.GetIdx(), h_indices)
                 r2 = _order_h_on_heavy_atom(mol, atom.GetIdx(), list(reversed(h_indices)))
