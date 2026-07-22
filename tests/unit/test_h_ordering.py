@@ -1216,7 +1216,7 @@ class TestOrderSp3dAxial2h:
                 ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 assert len(ax_h) == 2
                 result = _order_sp3d_axial_2h(
-                    mol, atom.GetIdx(), ax_h, ax, eq
+                    mol, atom.GetIdx(), ax_h, eq
                 )
                 assert result is not None
                 assert len(result) == 2
@@ -1232,7 +1232,7 @@ class TestOrderSp3dAxial2h:
                 ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
                 ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 result = _order_sp3d_axial_2h(
-                    mol, atom.GetIdx(), ax_h, ax, eq
+                    mol, atom.GetIdx(), ax_h, eq
                 )
                 assert result == sorted(ax_h)
                 return
@@ -1246,10 +1246,10 @@ class TestOrderSp3dAxial2h:
                 ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
                 ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 r1 = _order_sp3d_axial_2h(
-                    mol, atom.GetIdx(), ax_h, ax, eq
+                    mol, atom.GetIdx(), ax_h, eq
                 )
                 r2 = _order_sp3d_axial_2h(
-                    mol, atom.GetIdx(), [ax_h[1], ax_h[0]], ax, eq
+                    mol, atom.GetIdx(), [ax_h[1], ax_h[0]], eq
                 )
                 assert r1 is not None and r2 is not None
                 assert set(r1) == set(r2)

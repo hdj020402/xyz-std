@@ -620,7 +620,6 @@ def _order_sp3d_axial_2h(
     mol: Chem.Mol,
     center_idx: int,
     h_indices: list[int],
-    axial_indices: list[int],
     eq_indices: list[int],
 ) -> list[int]:
     """Order 2 axial H on SP3D via equatorial plane chirality.
@@ -735,7 +734,7 @@ def _order_h_sp3d(
     # Order axial H group
     if len(axial_h) == 2:
         result.extend(_order_sp3d_axial_2h(
-            mol, center_idx, axial_h, axial_nbrs, eq_nbrs
+            mol, center_idx, axial_h, eq_nbrs
         ))
     elif len(axial_h) == 1:
         result.extend(axial_h)
@@ -793,7 +792,7 @@ def _find_sp3d2_trans_pairs(
 
     used: set[int] = set()
     trans_pairs: list[tuple[int, int]] = []
-    for _angle, i, j in pairs_with_angles:
+    for _, i, j in pairs_with_angles:
         if i not in used and j not in used:
             trans_pairs.append((i, j))
             used.add(i)
