@@ -1067,11 +1067,8 @@ class TestHybridizationDispatch:
                     return
         pytest.fail("No sp2 =CH2 found")
 
-    def test_sp2_bh3_uses_plane_normal(self):
-        """BH3: sp2 center with 3 H and no double bond → geometric via plane normal.
-
-        The plane normal (cross of two B-H bond vectors) must be used as z_axis
-        rather than inferring a non-existent lone pair."""
+    def test_sp2_bh3_sorted(self):
+        """BH3: sp2 center with 3 equivalent H → sorted (all equivalent)."""
         mol = _make_mol_from_xyz("B")
         b_idx = 0
         h_idxs = [n.GetIdx() for n in mol.GetAtomWithIdx(b_idx).GetNeighbors()
@@ -1081,12 +1078,7 @@ class TestHybridizationDispatch:
         assert mol.GetAtomWithIdx(b_idx).GetHybridization() == Chem.HybridizationType.SP2
 
         result = _order_h_sp2(mol, b_idx, h_idxs)
-        assert len(result) == 3
-        assert set(result) == set(h_idxs)
-
-        # Determinism: same input → same output
-        r2 = _order_h_sp2(mol, b_idx, h_idxs)
-        assert result == r2
+        assert result == sorted(h_idxs)
 
     def test_top_level_dispatches_correctly(self):
         """_order_h_on_heavy_atom should route SP2/SP3/SP3D correctly."""

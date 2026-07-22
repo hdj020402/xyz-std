@@ -483,14 +483,7 @@ def _order_h_sp2(
                 return _order_2h_sp2(mol, center_idx, partner_idx, h_indices)
         return sorted(h_indices)
     elif len(h_indices) == 3:
-        conf = mol.GetConformer()
-        center_pos = np.array(conf.GetAtomPosition(center_idx))
-        sorted_h = sorted(h_indices)
-        v1 = np.array(conf.GetAtomPosition(sorted_h[0])) - center_pos
-        v2 = np.array(conf.GetAtomPosition(sorted_h[1])) - center_pos
-        z_axis = np.cross(v1, v2)
-        z_axis = z_axis / np.linalg.norm(z_axis)
-        return _order_h_geometric(mol, center_idx, h_indices, z_axis=z_axis)
+        return sorted(h_indices)
 
 
 def _order_2h_signed_volume(
@@ -717,33 +710,45 @@ def _order_h_sp3d(
 
     if n_h == 2:
         if len(axial_h) == 2 and len(eq_h) == 0:
-            return _order_sp3d_axial_2h(mol, center_idx, axial_h, eq_nbrs)
+            return _order_sp3d_axial_2h(
+                mol, center_idx, axial_h, eq_nbrs
+                )
         elif len(axial_h) == 0 and len(eq_h) == 2:
-            return _order_sp3d_equatorial_2h(mol, center_idx, eq_h, axial_nbrs, eq_nbrs)
+            return _order_sp3d_equatorial_2h(
+                mol, center_idx, eq_h, axial_nbrs, eq_nbrs
+                )
         elif len(axial_h) == 1 and len(eq_h) == 1:
             return sorted(axial_h) + sorted(eq_h)
 
     elif n_h == 3:
         if len(axial_h) == 2 and len(eq_h) == 1:
-            return _order_sp3d_axial_2h(mol, center_idx, axial_h, eq_nbrs) + eq_h
+            return _order_sp3d_axial_2h(
+                mol, center_idx, axial_h, eq_nbrs
+                ) + eq_h
         elif len(axial_h) == 1 and len(eq_h) == 2:
-            return axial_h + _order_sp3d_equatorial_2h(mol, center_idx, eq_h, axial_nbrs, eq_nbrs)
+            return axial_h + _order_sp3d_equatorial_2h(
+                mol, center_idx, eq_h, axial_nbrs, eq_nbrs
+                )
         elif len(axial_h) == 0 and len(eq_h) == 3:
             z_axis = _get_z_plus_vec(mol, tuple(axial_nbrs))
-            return _order_h_geometric(mol, center_idx, eq_h, z_axis=z_axis)
+            return _order_h_geometric(
+                mol, center_idx, eq_h, z_axis=z_axis
+                )
 
     elif n_h == 4:
         if len(axial_h) == 2 and len(eq_h) == 2:
             return sorted(axial_h) + sorted(eq_h)
         elif len(axial_h) == 1 and len(eq_h) == 3:
             z_axis = _get_z_plus_vec(mol, tuple(axial_nbrs))
-            return axial_h + _order_h_geometric(mol, center_idx, eq_h, z_axis=z_axis)
+            return axial_h + _order_h_geometric(
+                mol, center_idx, eq_h, z_axis=z_axis
+                )
 
     elif n_h == 5:
+        z_axis=_get_z_plus_vec(mol, tuple(axial_nbrs))
         return sorted(axial_h) + _order_h_geometric(
-            mol, center_idx, eq_h,
-            z_axis=_get_z_plus_vec(mol, tuple(axial_nbrs))
-        )
+            mol, center_idx, eq_h, z_axis=z_axis
+            )
 
 
 def _find_sp3d2_trans_pairs(
