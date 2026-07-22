@@ -201,8 +201,6 @@ z⁺ 决定规则：
 
 ```text
 _order_h_sp3d:
-  n_H ≤ 1 → 直接返回
-
   _classify_sp3d_positions → axial_nbrs, eq_nbrs
   分类失败 (≠2 axial) → fallback _order_h_geometric
 

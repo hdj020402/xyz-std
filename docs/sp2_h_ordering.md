@@ -24,7 +24,7 @@ SP2 碳为平面三角形（trigonal planar），3 个 σ 键方向共面呈 120
 | 场景 | 示例 | H 数 | 双键 | 处理方式 |
 | :--- | :--- | :--- | :--- | :--- |
 | 烯烃 =CH₂ | H₂C=CH–R | 2 | 有 | `_order_2h_sp2`（Z/E 或累积烯） |
-| sp2 无双键 | CH₃⁺、R₂C⁺–H | 2 | 无 | `sorted`（无 prochiral 参考方向） |
+| sp2 无双键 | H₂B–R、H₂C⁺–R | 2 | 无 | `sorted`（无 prochiral 参考方向） |
 | sp2 多 H | BH₃ | 3 | 无 | `_order_h_geometric`（CCW 投影） |
 
 ---

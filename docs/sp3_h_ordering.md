@@ -95,12 +95,14 @@ $$
 
 ### Case A：无非 H 邻居（如 NH₃、PH₃）
 
-3 个 H 全等价且无重原子参考。min-idx H 排第一，该 H 作为参考方向（z 轴），剩余 2H 沿此方向 CCW atan2 排序。
+3 配位锥形中心（3 个邻居均为 H），由键向量和反推孤对电子位置作为参考方向（z 轴）。3 个 H 全部沿此方向投影到 ⟂z 平面，CCW atan2 排序。
 
 ```text
-      H_min_idx (ref, 排第一)
+      lp (孤对电子, z⁺)
         │
-    H_b─●─H_c    ← 剩余 2H CCW 排序
+    H_a─●─H_c    ← 3H 全部 CCW 排序
+       ╱ ╲
+     H_b
 ```
 
 ---
@@ -155,8 +157,10 @@ _order_h_sp3:
 
   n_H ≥ 3:
     _order_h_geometric:
-      ├─ 有非 H 邻居（Case B）→ 非 H 为 ref，所有 H CCW 排序
-      └─ 无非 H 邻居（Case A）→ min-idx H 排第一 + 剩余 H CCW 排序
+      ├─ 有非 H 邻居（Case B）→ 非 H 为 z 轴，所有 H CCW 排序
+      └─ 无非 H 邻居（Case A）:
+           ├─ 3 配位（NH₃/PH₃, 仅 3H 邻居）→ 孤对电子为 z 轴，所有 H CCW 排序
+           └─ 4 配位（CH₄, 仅 4H 邻居）→ min-idx H 排第一 + 剩余 H CCW 排序
 
   说明：
   - SP3 的 geometric 场景中 ref 选择无歧义（≤1 个非 H 候选），

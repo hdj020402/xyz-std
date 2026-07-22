@@ -526,7 +526,7 @@ def _order_h_sp2(
                 partner_idx = bond.GetOtherAtomIdx(center_idx)
                 return _order_2h_sp2(mol, center_idx, partner_idx, h_indices)
         return sorted(h_indices)
-    elif len(h_indices) >= 3:
+    elif len(h_indices) == 3:
         conf = mol.GetConformer()
         center_pos = np.array(conf.GetAtomPosition(center_idx))
         sorted_h = sorted(h_indices)
@@ -705,9 +705,6 @@ def _order_h_sp3d(
 
     Axial H are ordered before equatorial H in the result.
     """
-    if len(h_indices) <= 1:
-        return list(h_indices)
-
     axial_nbrs, eq_nbrs = _classify_sp3d_positions(mol, center_idx)
 
     # Classification failure: fall back to geometric
@@ -1010,7 +1007,7 @@ def _order_sp3d2_4h(
         # non-H cis: 2 H-X + 1 H-H.
         # H-X group: order by trans partner CIP rank descending.
         ranks_hx = [_get_cip_rank(mol.GetAtomWithIdx(x)) for _, x in hx_pairs]
-        if len(set(ranks_hx)) >= 2:
+        if len(set(ranks_hx)) == 2:
             hx_pairs.sort(key=lambda p: _get_cip_rank(mol.GetAtomWithIdx(p[1])),
                           reverse=True)
             for h, _ in hx_pairs:
