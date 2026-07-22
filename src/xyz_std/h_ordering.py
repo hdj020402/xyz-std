@@ -3,10 +3,6 @@ from rdkit import Chem
 from rdkit.Chem import rdMolTransforms
 
 
-# =============================================================================
-# Common Utilities
-# =============================================================================
-
 def _get_cip_rank(atom: Chem.Atom) -> int:
     """Get _CIPRank from an atom, with a clear error if missing."""
     props = atom.GetPropsAsDict()
@@ -279,10 +275,6 @@ def _order_h_geometric(
     return prefix + _order_h_by_angle_projection(center_pos, z_axis, h_pos_list)
 
 
-# =============================================================================
-# SP2 — Trigonal Planar
-# =============================================================================
-
 def _walk_cumulene_far_end(
     mol: Chem.Mol,
     center_idx: int,
@@ -465,10 +457,6 @@ def _order_h_sp2(
         return _order_h_geometric(mol, center_idx, h_indices, z_axis=z_axis)
 
 
-# =============================================================================
-# SP3 — Tetrahedral
-# =============================================================================
-
 def _order_2h_signed_volume(
     mol: Chem.Mol,
     center_idx: int,
@@ -559,10 +547,6 @@ def _order_h_sp3(
         return _order_2h_sp3(mol, center_idx, h_indices)
     return _order_h_geometric(mol, center_idx, h_indices)
 
-
-# =============================================================================
-# SP3D — Trigonal Bipyramidal
-# =============================================================================
 
 def _classify_sp3d_positions(
     mol: Chem.Mol,
@@ -753,10 +737,6 @@ def _order_h_sp3d(
 
     return result
 
-
-# =============================================================================
-# SP3D2 — Octahedral
-# =============================================================================
 
 def _find_sp3d2_trans_pairs(
     mol: Chem.Mol,
@@ -1155,10 +1135,6 @@ def _order_h_sp3d2(
             mol, center_idx, h_indices, hh_pairs
         )
 
-
-# =============================================================================
-# Top-Level Dispatcher
-# =============================================================================
 
 def _order_h_on_heavy_atom(
     mol: Chem.Mol,

@@ -1269,7 +1269,7 @@ class TestOrderSp3dAxial2h:
         mol = _make_sp3d_mol("H", "H", "Br", "Cl", "F")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
-                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                ax, _ = _classify_sp3d_positions(mol, atom.GetIdx())
                 ax_h = [h for h in ax if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 r = _order_h_sp3d(mol, atom.GetIdx(), ax_h)
                 assert len(r) == 2
@@ -1338,7 +1338,7 @@ class TestOrderSp3dEquatorial2h:
         mol = _make_sp3d_mol("F", "Cl", "Br", "H", "H")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
-                ax, eq = _classify_sp3d_positions(mol, atom.GetIdx())
+                _, eq = _classify_sp3d_positions(mol, atom.GetIdx())
                 eq_h = [h for h in eq if mol.GetAtomWithIdx(h).GetSymbol() == "H"]
                 r = _order_h_sp3d(mol, atom.GetIdx(), eq_h)
                 assert len(r) == 2
