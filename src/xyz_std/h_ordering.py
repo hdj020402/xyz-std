@@ -275,6 +275,34 @@ def _order_h_geometric(
     return prefix + _order_h_by_angle_projection(center_pos, z_axis, h_pos_list)
 
 
+def _compute_pair_angles(
+    mol: Chem.Mol,
+    center_idx: int
+) -> list[tuple[float, int, int]]:
+    """Return (angle_rad, idx_i, idx_j) for all neighbor pairs, sorted descending."""
+    conf = mol.GetConformer()
+    center_pos = np.array(conf.GetAtomPosition(center_idx))
+    center_atom = mol.GetAtomWithIdx(center_idx)
+    all_nbrs = list(center_atom.GetNeighbors())
+
+    vecs = {n.GetIdx(): np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
+            for n in all_nbrs}
+    nbr_indices = [n.GetIdx() for n in all_nbrs]
+
+    pairs = []
+    for i in range(len(nbr_indices)):
+        for j in range(i + 1, len(nbr_indices)):
+            vi = vecs[nbr_indices[i]]
+            vj = vecs[nbr_indices[j]]
+            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
+            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
+            angle = np.arccos(cos_angle)
+            pairs.append((angle, nbr_indices[i], nbr_indices[j]))
+
+    pairs.sort(key=lambda x: -x[0])
+    return pairs
+
+
 def _walk_cumulene_far_end(
     mol: Chem.Mol,
     center_idx: int,
@@ -546,34 +574,6 @@ def _order_h_sp3(
     if len(h_indices) == 2:
         return _order_2h_sp3(mol, center_idx, h_indices)
     return _order_h_geometric(mol, center_idx, h_indices)
-
-
-def _compute_pair_angles(
-    mol: Chem.Mol,
-    center_idx: int
-) -> list[tuple[float, int, int]]:
-    """Return (angle_rad, idx_i, idx_j) for all neighbor pairs, sorted descending."""
-    conf = mol.GetConformer()
-    center_pos = np.array(conf.GetAtomPosition(center_idx))
-    center_atom = mol.GetAtomWithIdx(center_idx)
-    all_nbrs = list(center_atom.GetNeighbors())
-
-    vecs = {n.GetIdx(): np.array(conf.GetAtomPosition(n.GetIdx())) - center_pos
-            for n in all_nbrs}
-    nbr_indices = [n.GetIdx() for n in all_nbrs]
-
-    pairs = []
-    for i in range(len(nbr_indices)):
-        for j in range(i + 1, len(nbr_indices)):
-            vi = vecs[nbr_indices[i]]
-            vj = vecs[nbr_indices[j]]
-            cos_angle = np.dot(vi, vj) / (np.linalg.norm(vi) * np.linalg.norm(vj))
-            cos_angle = float(np.clip(cos_angle, -1.0, 1.0))
-            angle = np.arccos(cos_angle)
-            pairs.append((angle, nbr_indices[i], nbr_indices[j]))
-
-    pairs.sort(key=lambda x: -x[0])
-    return pairs
 
 
 def _classify_sp3d_positions(
