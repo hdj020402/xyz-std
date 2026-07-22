@@ -186,7 +186,7 @@ class TestOrderHOnHeavyAtom:
         assert set(result) == set(h_indices)
 
 
-class TestTryOrder2hSp3:
+class TestOrder2hSp3:
     def test_prochiral_center(self):
         """Prochiral CH2 between different groups should give R/S ordering."""
         # 2-chloroethanol: Cl-CH2-CH2-OH — the CH2 near Cl has Cl + CH2OH + H + H
@@ -260,7 +260,7 @@ class TestAngleProjection:
         assert r1 == r2
 
 
-class TestTryOrder2hSp2:
+class TestOrder2hSp2:
     """Tests for sp2 =CH2 ordering via CIP rank + dihedral."""
 
     def test_terminal_alkene_asymmetric(self):
@@ -376,7 +376,7 @@ class TestTryOrder2hSp2:
         pytest.fail("No terminal =CH2 found")
 
 
-class TestTryOrder2hAllene:
+class TestOrder2hAllene:
     """Tests for allene =CH2 ordering via axial chirality (R_a/S_a)."""
 
     def test_unsubstituted_returns_sorted(self):
@@ -508,7 +508,7 @@ def _make_cumulene_mol(smiles: str, seed: int = 42) -> Chem.Mol:
     return mol
 
 
-class TestTryOrder2hAlleneEven:
+class TestOrder2hAlleneEven:
     """Tests for even-cumulene (butatriene etc.) =CH2 ordering.
 
     sp_count is even → terminal planes are coplanar → pro-Z/pro-E via
@@ -625,14 +625,14 @@ class TestTryOrder2hAlleneEven:
         pytest.fail("No terminal =CH2 found in butatriene")
 
 
-class TestTryOrder2hSp2OpenBabel:
+class TestOrder2hSp2OpenBabel:
     """Tests for sp2 =CH2 ordering via OpenBabel (production) backend.
 
     These tests use _make_mol_from_xyz which goes through the XYZ -> OpenBabel
     -> MOL block -> RDKit pipeline, matching the production code path. This
     ensures _CIPRank is available for all molecule types including allenes.
 
-    Mirrors TestTryOrder2hSp2 but via the OpenBabel pathway.
+    Mirrors TestOrder2hSp2 but via the OpenBabel pathway.
     """
 
     def test_terminal_alkene_asymmetric(self):
@@ -743,7 +743,7 @@ class TestInferLonePairPosition:
         # lp_dir and -s should point in same direction (positive dot product)
         assert np.dot(lp_dir, -s) > 0
 
-class TestTryOrder2hSignedVolume:
+class TestOrder2hSignedVolume:
     """Tests for _order_2h_signed_volume (non-carbon prochiral centers)."""
 
     def test_phosphine_prochiral(self):
@@ -2057,12 +2057,13 @@ class TestGetZPlusVec:
         assert vec[2] < 0  # points from F(+) to Cl(-)
 
     def test_cip_equal_canonical_order(self):
-        """Same CIP rank + _CanonicalOrder → larger order is z⁺."""
+        """Same CIP rank + _CanonicalOrder → smaller order is z⁺."""
         mol, a_idx, b_idx = self._make_pair_mol("F", "F")
         mol.GetAtomWithIdx(a_idx).SetIntProp('_CanonicalOrder', 10)
         mol.GetAtomWithIdx(b_idx).SetIntProp('_CanonicalOrder', 5)
         vec = _get_z_plus_vec(mol, (a_idx, b_idx))
-        assert vec[2] > 0
+        # b has smaller order (5 < 10) → z⁺ = b, vec = b - a → points -z
+        assert vec[2] < 0
 
     def test_cip_equal_no_canonical(self):
         """Same CIP rank + no _CanonicalOrder (H atoms) → min index is z⁺."""
