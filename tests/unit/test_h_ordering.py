@@ -92,8 +92,8 @@ def _make_mol_from_xyz(smiles: str, seed: int = 42) -> Chem.Mol:
 
 
 class TestOrderHOnHeavyAtom:
-    def test_single_h_passthrough(self):
-        """Single H should be returned as-is."""
+    def test_two_h_on_oxygen(self):
+        """Two H on O should both be returned."""
         mol = _make_mol_with_3d("O")  # water: O with 2H
         # Find O atom
         o_idx = None
@@ -202,7 +202,6 @@ class TestTryOrder2hSp3:
                 Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
                 result = _order_2h_sp3(
                     mol, atom.GetIdx(), [h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx])
-                assert result is not None
                 assert len(result) == 2
                 return
         pytest.skip("No suitable prochiral center found")
@@ -282,9 +281,6 @@ class TestTryOrder2hSp2:
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     result = _order_2h_sp2(mol, center, partner, [h1, h2])
-                    assert result is not None, (
-                        "sp2 CIP should succeed for asymmetric terminal alkene"
-                    )
                     assert len(result) == 2
                     assert set(result) == {h1, h2}
                     return
@@ -328,12 +324,9 @@ class TestTryOrder2hSp2:
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
                     r2 = _order_2h_sp2(mol, center, partner, [h2, h1])
-                    # Both should succeed and contain the same H's
-                    assert r1 is not None
-                    assert r2 is not None
                     assert set(r1) == set(r2)
-                    # Output should swap when input swaps
-                    assert r1 == [h1, h2] or r2 == [h2, h1]
+                    # Output is input-order independent
+                    assert r1 == r2
                     return
         pytest.fail("No terminal =CH2 found")
 
@@ -424,9 +417,6 @@ class TestTryOrder2hAllene:
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     result = _order_2h_sp2(mol, center, partner, [h1, h2])
-                    assert result is not None, (
-                        "asymmetric allene should succeed"
-                    )
                     assert len(result) == 2
                     assert set(result) == {h1, h2}
                     return
@@ -470,10 +460,8 @@ class TestTryOrder2hAllene:
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
                     r2 = _order_2h_sp2(mol, center, partner, [h2, h1])
-                    assert r1 is not None
-                    assert r2 is not None
                     assert set(r1) == set(r2)
-                    assert r1 == [h1, h2] or r2 == [h2, h1]
+                    assert r1 == r2
                     return
         pytest.fail("No terminal =CH2 found")
 
@@ -515,7 +503,7 @@ def _make_cumulene_mol(smiles: str, seed: int = 42) -> Chem.Mol:
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
 
     for atom in mol.GetAtoms():
-        atom.SetDoubleProp("_CIPRank", float(atom.GetAtomicNum()))
+        atom.SetIntProp("_CIPRank", atom.GetAtomicNum())
 
     return mol
 
@@ -566,9 +554,6 @@ class TestTryOrder2hAlleneEven:
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     result = _order_2h_sp2(mol, center, partner, [h1, h2])
-                    assert result is not None, (
-                        "asymmetric butatriene should succeed"
-                    )
                     assert len(result) == 2
                     assert set(result) == {h1, h2}
                     return
@@ -612,10 +597,8 @@ class TestTryOrder2hAlleneEven:
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     r1 = _order_2h_sp2(mol, center, partner, [h1, h2])
                     r2 = _order_2h_sp2(mol, center, partner, [h2, h1])
-                    assert r1 is not None
-                    assert r2 is not None
                     assert set(r1) == set(r2)
-                    assert r1 == [h1, h2] or r2 == [h2, h1]
+                    assert r1 == r2
                     return
         pytest.fail("No terminal =CH2 found in butatriene")
 
@@ -668,9 +651,6 @@ class TestTryOrder2hSp2OpenBabel:
                     center = atom.GetIdx()
                     h1, h2 = h_nbrs[0].GetIdx(), h_nbrs[1].GetIdx()
                     result = _order_2h_sp2(mol, center, partner, [h1, h2])
-                    assert result is not None, (
-                        "sp2 CIP should succeed for asymmetric terminal alkene (OB)"
-                    )
                     assert len(result) == 2
                     assert set(result) == {h1, h2}
                     return
@@ -757,9 +737,8 @@ class TestInferLonePairPosition:
             np.array([-1.0, 1.0, -1.0]),
         ]
         lp = _infer_lone_pair_position(center, vecs)
-        assert lp is not None
         # Lone pair should be in the opposite direction to sum of bonds
-        s = vecs[0] + vecs[1] + vecs[2]
+        s = sum(v / np.linalg.norm(v) for v in vecs)
         lp_dir = lp - center
         # lp_dir and -s should point in same direction (positive dot product)
         assert np.dot(lp_dir, -s) > 0
@@ -777,9 +756,6 @@ class TestTryOrder2hSignedVolume:
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
                     result = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
-                    assert result is not None, (
-                        "Signed volume should determine pro-R/pro-S for PH2"
-                    )
                     assert len(result) == 2
                     assert set(result) == {h1, h2}
                     return
@@ -795,7 +771,6 @@ class TestTryOrder2hSignedVolume:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
                     r1 = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
                     r2 = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
-                    assert r1 is not None
                     assert r1 == r2
                     return
         pytest.fail("No P with 2H found")
@@ -810,9 +785,8 @@ class TestTryOrder2hSignedVolume:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
                     r1 = _order_2h_signed_volume(mol, atom.GetIdx(), [h1, h2])
                     r2 = _order_2h_signed_volume(mol, atom.GetIdx(), [h2, h1])
-                    assert r1 is not None and r2 is not None
                     assert set(r1) == set(r2)
-                    assert r1 == [h1, h2] or r2 == [h2, h1]
+                    assert r1 == r2
                     return
         pytest.fail("No P with 2H found")
 
@@ -825,9 +799,6 @@ class TestTryOrder2hSignedVolume:
                 if len(h_nbrs) == 2:
                     h1, h2 = h_nbrs[0], h_nbrs[1]
                     result = _order_2h_sp3(mol, atom.GetIdx(), [h1, h2])
-                    assert result is not None, (
-                        "_order_2h_sp3 should fallback to signed volume for P"
-                    )
                     assert len(result) == 2
                     return
         pytest.fail("No P with 2H found")
@@ -993,20 +964,28 @@ class TestOrderHSp3d:
 
     def test_pf2h3_axial_before_equatorial(self):
         """PF2H3: axial H should come before equatorial H in output."""
-        mol = _make_sp3d_mol("F", "F", "H", "H", "H")
+        mol = _make_sp3d_mol("H", "F", "H", "H", "H")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 axial, eq_ = _classify_sp3d_positions(mol, atom.GetIdx())
-                # ax=F, eq=H in this test molecule
-                h_axial_set = set(axial)
-                h_eq_set = set(eq_)
-                assert len(h_axial_set) == 2
-                assert len(h_eq_set) == 3
+                # ax=[H,F], eq=[H,H,H] in this test molecule
+                # axial_set contains F (non-H) atoms
+                axial_set = set(axial)
+                eq_set = set(eq_)
+                assert len(axial_set) == 2
+                assert len(eq_set) == 3
+
+                axial_h = [idx for idx in axial if mol.GetAtomWithIdx(idx).GetAtomicNum() == 1]
+                eq_h = [idx for idx in eq_ if mol.GetAtomWithIdx(idx).GetAtomicNum() == 1]
+                assert len(axial_h) == 1
+                assert len(eq_h) == 3
 
                 h_indices = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
                 result = _order_h_sp3d(mol, atom.GetIdx(), h_indices)
                 assert len(result) == len(h_indices)
                 assert set(result) == set(h_indices)
+                # axial H should appear before all equatorial H
+                assert result.index(axial_h[0]) < min(result.index(e) for e in eq_h)
                 return
         pytest.fail("No P found")
 
@@ -1208,6 +1187,9 @@ def _make_sp3d_mol(ax1_sym, ax2_sym, eq1_sym, eq2_sym, eq3_sym):
 
     Chem.AssignAtomChiralTagsFromStructure(mol)
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    for atom in mol.GetAtoms():
+        if '_CIPRank' not in atom.GetPropsAsDict():
+            atom.SetIntProp('_CIPRank', 0)
     return mol
 
 
@@ -1225,7 +1207,6 @@ class TestOrderSp3dAxial2h:
                 result = _order_sp3d_axial_2h(
                     mol, atom.GetIdx(), ax_h, eq
                 )
-                assert result is not None
                 assert len(result) == 2
                 assert set(result) == set(ax_h)
                 return
@@ -1258,9 +1239,8 @@ class TestOrderSp3dAxial2h:
                 r2 = _order_sp3d_axial_2h(
                     mol, atom.GetIdx(), [ax_h[1], ax_h[0]], eq
                 )
-                assert r1 is not None and r2 is not None
                 assert set(r1) == set(r2)
-                assert r1 == [ax_h[0], ax_h[1]] or r2 == [ax_h[1], ax_h[0]]
+                assert r1 == r2
                 return
         pytest.fail("No P found")
 
@@ -1294,7 +1274,6 @@ class TestOrderSp3dEquatorial2h:
                 result = _order_sp3d_equatorial_2h(
                     mol, atom.GetIdx(), eq_h, ax, eq
                 )
-                assert result is not None
                 assert len(result) == 2
                 assert set(result) == set(eq_h)
                 return
@@ -1327,9 +1306,8 @@ class TestOrderSp3dEquatorial2h:
                 r2 = _order_sp3d_equatorial_2h(
                     mol, atom.GetIdx(), [eq_h[1], eq_h[0]], ax, eq
                 )
-                assert r1 is not None and r2 is not None
                 assert set(r1) == set(r2)
-                assert r1 == [eq_h[0], eq_h[1]] or r2 == [eq_h[1], eq_h[0]]
+                assert r1 == r2
                 return
         pytest.fail("No P found")
 
@@ -1453,6 +1431,9 @@ def _make_oct_mol(*vert_syms):
 
     Chem.AssignAtomChiralTagsFromStructure(mol)
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    for atom in mol.GetAtoms():
+        if '_CIPRank' not in atom.GetPropsAsDict():
+            atom.SetIntProp('_CIPRank', 0)
     return mol
 
 
@@ -1493,7 +1474,6 @@ class TestOrderSp3d2Trans2h:
                     result = _order_sp3d2_trans_2h(
                         mol, atom.GetIdx(), [h1, h2], trans_of
                     )
-                    assert result is not None
                     assert len(result) == 2
                     assert set(result) == {h1, h2}
                     return
@@ -1536,8 +1516,7 @@ class TestOrderSp3d2Trans2h:
                     r2 = _order_sp3d2_trans_2h(
                         mol, atom.GetIdx(), [h2, h1], trans_of
                     )
-                    assert r1 is not None and r2 is not None
-                    assert r1 == [h1, h2] or r2 == [h2, h1]
+                    assert r1 == r2
                     return
         pytest.fail("No trans H pair found")
 
@@ -1566,7 +1545,6 @@ class TestOrderSp3d2Cis2h:
                                     mol, atom.GetIdx(),
                                     [h_all[i], h_all[j]], trans_of
                                 )
-                                assert result is not None
                                 assert len(result) == 2
                                 assert set(result) == {h_all[i], h_all[j]}
                                 return
@@ -1601,7 +1579,7 @@ class TestOrderSp3d2Cis2h:
 class TestOrderHSp3d2All:
     """Integration tests for _order_h_sp3d2 across H counts."""
 
-    def test_2h_trans_via_dispatch(self):
+    def test_2h_trans(self):
         """2 trans H → chemical ordering via _order_h_sp3d2."""
         mol = _make_oct_mol("H", "H", "Br", "Cl", "F", "I")
         for atom in mol.GetAtoms():
@@ -1616,7 +1594,7 @@ class TestOrderHSp3d2All:
                 return
         pytest.fail("No octahedral center found")
 
-    def test_2h_cis_via_dispatch(self):
+    def test_2h_cis(self):
         """2 cis H → chemical ordering via _order_h_sp3d2."""
         mol = _make_oct_mol("F", "H", "Cl", "H", "Br", "I")
         for atom in mol.GetAtoms():
@@ -1631,7 +1609,7 @@ class TestOrderHSp3d2All:
                 return
         pytest.fail("No octahedral center found")
 
-    def test_3h_via_dispatch(self):
+    def test_3h(self):
         """3 H on octahedral center → trans/cis dispatch."""
         mol = _make_oct_mol("H", "H", "H", "F", "Cl", "Br")
         for atom in mol.GetAtoms():
@@ -1647,7 +1625,7 @@ class TestOrderHSp3d2All:
                 return
         pytest.fail("No octahedral center found")
 
-    def test_4h_via_dispatch(self):
+    def test_4h(self):
         """4 H → 2 trans pairs or 1 trans + 2 singles."""
         mol = _make_oct_mol("H", "H", "H", "H", "F", "Cl")
         for atom in mol.GetAtoms():
@@ -1663,7 +1641,7 @@ class TestOrderHSp3d2All:
                 return
         pytest.fail("No octahedral center found")
 
-    def test_5h_via_dispatch(self):
+    def test_5h(self):
         """5 H → 2 trans pairs + 1 H-X."""
         mol = _make_oct_mol("H", "H", "H", "H", "H", "F")
         for atom in mol.GetAtoms():
@@ -1679,7 +1657,7 @@ class TestOrderHSp3d2All:
                 return
         pytest.fail("No octahedral center found")
 
-    def test_6h_via_dispatch(self):
+    def test_6h(self):
         """6 H → all equivalent, geometric CCW."""
         mol = _make_oct_mol("H", "H", "H", "H", "H", "H")
         for atom in mol.GetAtoms():
@@ -1745,6 +1723,9 @@ class TestOrderHSp3d2Fac:
                 assert r == r2
                 assert len(r) == 3
                 assert set(r) == set(h_all)
+                assert r[0] == min(h_all), (
+                    "AAA: min-index H should be first (deuterated)"
+                )
                 return
         pytest.fail("No fac AAA center found")
 
@@ -1883,6 +1864,18 @@ class TestIsCcw:
         with pytest.raises(ValueError, match="at least 3"):
             _is_ccw(mol, c, z, idxs[:2])
 
+    def test_two_atoms_same_angle(self):
+        """Two atoms at identical projected angle → should still produce a result."""
+        mol, c, idxs = self._make_mol_3pts([
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),  # same position!
+            (-1.0, 0.0, 0.0),
+        ])
+        z = np.array([0.0, 0.0, 1.0])
+        # Should not crash; result is well-defined (two descents or zero)
+        result = _is_ccw(mol, c, z, idxs)
+        assert isinstance(result, bool)
+
 
 class TestBuildPerpBasis:
     """Tests for _build_perp_basis."""
@@ -1914,6 +1907,12 @@ class TestBuildPerpBasis:
         assert np.allclose(x, [0.0, 1.0, 0.0])
         assert np.allclose(y, [-1.0, 0.0, 0.0])
         assert np.allclose(np.cross(x, y), z)
+
+    def test_x_direction_parallel_to_z_warns(self):
+        """x_direction parallel to z_axis → zero projection → NaN warning."""
+        z = np.array([0.0, 0.0, 1.0])
+        with pytest.warns(RuntimeWarning):
+            _build_perp_basis(z, x_direction=np.array([0.0, 0.0, 1.0]))
 
 
 class TestProjectedAngle:
@@ -2090,6 +2089,16 @@ class TestGetCipRank:
                 assert isinstance(rank, int)
                 return
 
+    def test_float_cip_rank_truncation(self):
+        """Float _CIPRank should be correctly truncated to int."""
+        mol = Chem.RWMol()
+        a = Chem.Atom(6)
+        a_idx = mol.AddAtom(a)
+        mol.UpdatePropertyCache(strict=False)
+        mol = mol.GetMol()
+        mol.GetAtomWithIdx(a_idx).SetDoubleProp('_CIPRank', 17.0)
+        assert _get_cip_rank(mol.GetAtomWithIdx(a_idx)) == 17
+
 
 class TestCumuleneWalkFailure:
     """Test _order_2h_cumulene when walk returns far_subs empty."""
@@ -2114,10 +2123,10 @@ class TestCumuleneWalkFailure:
         pytest.skip("No terminal =CH2 found in ketene")
 
 
-class TestSp2EmptyPartnerSubs:
-    """Test _order_2h_sp2 with empty partner_subs."""
+class TestSp2SinglePartnerSub:
+    """Test _order_2h_sp2 with partner having a single substituent."""
 
-    def test_partner_has_subs_normal_path(self):
+    def test_partner_single_substituent_normal_alkene(self):
         """Imine HN=CH2: partner N has H substituent → normal alkene logic."""
         mol = _make_mol_with_3d("C=N")
         for atom in mol.GetAtoms():
@@ -2138,11 +2147,11 @@ class TestSp2EmptyPartnerSubs:
         pytest.skip("No terminal =CH2 found")
 
 
-class TestSp2NoDoubleBond:
-    """Test _order_h_sp2 with 2H but no double bond."""
+class TestSp2BH3ThreeH:
+    """Test _order_h_sp2 with 3H and no double bond."""
 
-    def test_sp2_no_double_bond_returns_sorted(self):
-        """sp2 center with 2H and no C=C → sorted."""
+    def test_sp2_3h_no_double_bond_geometric(self):
+        """sp2 center with 3H and no double bond → geometric via plane normal."""
         mol = _make_mol_with_3d("[CH3+]")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 6:
@@ -2242,7 +2251,7 @@ class TestSp3d2Cis2hChirality:
 
     def test_equal_trans_partner_chirality_succeeds(self):
         """2 cis H with equal trans partners → T→H chirality decides order."""
-        mol = _make_oct_mol("F", "H", "F", "H", "Cl", "Br")
+        mol = _make_oct_mol("F", "H", "F", "H", "Br", "Cl")
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 15:
                 trans_pairs = _find_sp3d2_trans_pairs(mol, atom.GetIdx())
@@ -2262,7 +2271,6 @@ class TestSp3d2Cis2hChirality:
                                 mol, atom.GetIdx(),
                                 [h_all[i], h_all[j]], trans_of
                             )
-                            assert result is not None
                             assert len(result) == 2
                             assert set(result) == {h_all[i], h_all[j]}
                             return
@@ -2330,7 +2338,6 @@ class TestOrder2hCumuleneDirect:
                         result = _order_2h_cumulene(
                             mol, atom.GetIdx(), partner, [h1, h2]
                         )
-                        assert result is not None
                         assert len(result) == 2
                         assert set(result) == {h1, h2}
                         # Should be deterministic
@@ -2358,7 +2365,6 @@ class TestOrder2hCumuleneDirect:
                         result = _order_2h_cumulene(
                             mol, atom.GetIdx(), partner, [h1, h2]
                         )
-                        assert result is not None
                         assert len(result) == 2
                         assert set(result) == {h1, h2}
                         return
