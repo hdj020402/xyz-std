@@ -12,32 +12,74 @@ def _read_xyz_content(xyz: str) -> str:
         return f.read()
 
 
-def xyz_to_rdkit_mol(xyz_str: str, backend: str = "openbabel") -> Chem.Mol:
+def xyz_to_rdkit_mol(
+    xyz_str: str,
+    backend: str = "openbabel",
+    total_charge: int | None = None,
+) -> Chem.Mol:
     """
     Convert XYZ string to RDKit Mol with 3D coordinates and bond connectivity.
 
+    For the ``"openbabel"`` backend (default), the conversion uses a two-step
+    sanitization strategy:
+
+    1. Strict sanitization first -- this preserves OpenBabel's CIP rank
+       annotations for allenes and other chiral molecules.
+    2. If strict sanitization fails (e.g. charged species with unusual
+       valence like NH4+, NO3-, SO4(2-)), fall back to relaxed sanitization
+       that skips ``SANITIZE_PROPERTIES`` (valence/charge checks) while
+       still running hybridization, kekulization, and other steps needed
+       for InChI generation and H-ordering.
+
+    No charge inference is performed -- XYZ files from QM calculations rarely
+    carry charge information, and formal charges do not affect the InChI /N:
+    layer (heavy-atom ordering) or the geometry-based H-ordering.  For
+    chemically accurate charged InChI strings (with /p layers), use the
+    ``mol-conversion`` package which has full charge-inference support.
+
     Args:
-        xyz_str: XYZ format string (atom count, comment line, then coordinates)
-        backend: Bond perception method. "openbabel" uses OpenBabel with relaxed
-            sanitization; "rdkit" uses RDKit's rdDetermineBonds from 3D coordinates.
+        xyz_str: XYZ format string (atom count, comment line, then coordinates).
+        backend: Bond perception method. ``"openbabel"`` (default) uses
+            OpenBabel with the two-step strategy described above;
+            ``"rdkit"`` uses RDKit's rdDetermineBonds from 3D coordinates.
+        total_charge: Only used by the ``"rdkit"`` backend -- passed directly
+            to ``DetermineBonds(charge=total_charge)``. Ignored by the
+            ``"openbabel"`` backend.
 
     Returns:
         RDKit Mol with explicit H atoms and a 3D conformer
+
+    Raises:
+        ValueError: if neither backend can produce a valid RDKit Mol
     """
     if backend == "openbabel":
         ob_mol = pybel.readstring("xyz", xyz_str)
         molblock = ob_mol.write("mol")
 
+        # Step 1: strict sanitization — preserves OB _CIPRank for allenes
         mol = Chem.MolFromMolBlock(molblock, removeHs=False, sanitize=True)
+        if mol is not None:
+            return mol
+
+        # Step 2: relaxed sanitization — skip valence check for charged
+        # species (NH4+, NO3-, SO4(2-), etc.) where OB produces correct
+        # connectivity but RDKit's strict valence rules reject the mol
+        mol = Chem.MolFromMolBlock(molblock, removeHs=False, sanitize=False)
         if mol is None:
             raise ValueError("RDKit failed to parse the MOL block from OpenBabel.")
+        Chem.SanitizeMol(
+            mol,
+            Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+        )
         return mol
 
     if backend == "rdkit":
         mol = Chem.MolFromXYZBlock(xyz_str)
         if mol is None:
             raise ValueError("RDKit failed to parse the XYZ block.")
-        rdDetermineBonds.DetermineBonds(mol)
+        rdDetermineBonds.DetermineBonds(
+            mol, charge=total_charge if total_charge is not None else 0
+        )
         Chem.SanitizeMol(mol)
         return mol
 
@@ -160,11 +202,15 @@ def standardize_xyz(
     # Parse symbols/coords from the original text
     symbols, coords = xyz_to_symbols_coords(xyz_str)
 
-    # Create mol (with bonds and 3D) and compute standard order
-    mol = xyz_to_rdkit_mol(xyz_str)
+    # Create mol (with bonds and 3D) and compute standard order.
+    # OpenBabel is the primary backend (better bond-order inference from 3D
+    # coords, plus the two-step sanitization handles both normal and charged
+    # species). RDKit is a last-resort fallback for rare cases where OB
+    # produces a structurally wrong mol (e.g. butatriene C-C≡C-C misassignment).
+    mol = xyz_to_rdkit_mol(xyz_str, backend="openbabel")
     try:
         order = get_standard_atom_order(mol)
-    except (Chem.rdchem.AtomValenceException, RuntimeError):
+    except RuntimeError:
         mol = xyz_to_rdkit_mol(xyz_str, backend="rdkit")
         order = get_standard_atom_order(mol)
 

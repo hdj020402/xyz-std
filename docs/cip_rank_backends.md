@@ -13,6 +13,9 @@
 ```text
 SMILES / XYZ 输入
   → xyz_to_rdkit_mol(xyz_str, backend="openbabel")   # 首选 OpenBabel
+      → Step 1: MolFromMolBlock(sanitize=True)         # 严格 sanitize，保留 _CIPRank
+      → Step 2: (fallback) sanitize=False              # 宽松 sanitize，跳过化合价检查
+          + SANITIZE_ALL ^ SANITIZE_PROPERTIES
   → get_standard_atom_order(mol)
       → AssignAtomChiralTagsFromStructure(mol)
       → AssignStereochemistry(mol, cleanIt=True, force=True)
@@ -20,12 +23,16 @@ SMILES / XYZ 输入
       → _order_h_on_heavy_atom → _get_cip_rank(...)
 ```
 
-若 OpenBabel 路径抛出 `AtomValenceException` 或 `RuntimeError`（含缺失 `_CIPRank`），则回退到 RDKit 直接路径：
+`xyz_to_rdkit_mol` 使用两步 sanitization 策略（详见
+`docs/sanitization_strategy.md`）：
 
-```text
-  → xyz_to_rdkit_mol(xyz_str, backend="rdkit")        # 回退 RDKit
-  → get_standard_atom_order(mol)                       # 重新走相同流程
-```
+1. 先尝试 `sanitize=True`——保留 OB 对累积烯烃等手性分子的 `_CIPRank` 注解
+2. 失败则回退到 `sanitize=False` + `SANITIZE_ALL ^ SANITIZE_PROPERTIES`——处理
+   NH4+ 等带电物种
+
+不再需要在 `standardize_xyz` 中捕获 `AtomValenceException`——两步策略已在
+`xyz_to_rdkit_mol` 内部处理了 sanitization 失败的情况。保留 `RuntimeError`
+作为最后手段的回退（例如 butatriene 中 OB 误判键型导致 `_CIPRank` 缺失）。
 
 ## 各后端行为对比
 
@@ -34,7 +41,8 @@ SMILES / XYZ 输入
 | 特性 | 行为 |
 | :--- | :--- |
 | Bond perception | OpenBabel 从 XYZ 坐标推断键连 → 写 MOL block → RDKit 解析 |
-| `_CIPRank` 覆盖 | **所有原子**，包括对称分子中的等价原子 |
+| `_CIPRank` 覆盖 | **所有原子**，通过 `MolFromMolBlock(sanitize=True)` 获得 |
+| `_CIPRank` 来源 | 由 `MolFromMolBlock` 解析 MOL block 时内部设置（非来自任何单独的 `SanitizeFlags`）。`AssignStereochemistry(force=True)` 会保留已有的 `_CIPRank`（不覆盖不擦除） |
 | 已知问题 | 高配位分子（SH₆、PH₅ 等）键连推断错误，无法正确往返 |
 
 OpenBabel 为**所有**原子（包括 H）分配 `_CIPRank`。对称分子（如 CH₄、PH₅）中的等价原子也会得到相同的 rank 值，不存在缺失 `_CIPRank` 的情况。
@@ -67,7 +75,11 @@ def _get_cip_rank(atom: Chem.Atom) -> int:
 
 此函数**不尝试处理缺失 `_CIPRank` 的情况**——它直接抛出 `RuntimeError`。这是有意为之：
 
-1. **生产环境中**：OpenBabel 路径保证所有原子都有 `_CIPRank`。若 OpenBabel 失败，`standardize_xyz` 会捕获 `RuntimeError` 并回退到 RDKit 直接路径。
+1. **生产环境中**：OpenBabel 路径的 Step 1（`sanitize=True`）保证所有原子都有
+   `_CIPRank`。若 Step 1 因化合价异常失败，Step 2（宽松 sanitization）仍能生成
+   可用的 Mol，但 `_CIPRank` 可能缺失——此时调用 `_get_cip_rank` 会抛出
+   `RuntimeError`。这类分子（NH4+、带电物种等）通常不具有累积烯烃轴手性，
+   不会进入需要 `_CIPRank` 的代码路径。
 2. **调用方责任**：所有 `_get_cip_rank` 的调用方都有责任确保只在确实有 `_CIPRank` 的原子（由 OpenBabel 提供）上调用。
 
 ### `_get_z_plus_vec` 的 H 预检
@@ -143,4 +155,6 @@ def _make_mol_from_xyz(smiles, seed=42):
 | **WSL**（本地） | 2025.09.3 | ✅（通过 sshfs 访问远程文件） | RDKit 直连路径缺失对称分子 |
 | **GPU 服务器**（gpu0001/2） | 取决于安装 | 取决于安装 | 未测试 |
 
-由于生产管线优先走 OpenBabel 路径，`_CIPRank` 在生产中始终可用。RDKit 版本差异仅在 OpenBabel 路径失败、回退到 RDKit 直接路径时才可能暴露——此时 `RuntimeError` 被 `standardize_xyz` 捕获并触发 RDKit 回退。
+由于生产管线优先走 OpenBabel 路径的 Step 1（`sanitize=True`），`_CIPRank` 在
+绝大多数分子中可用。Step 2 回退（宽松 sanitization）用于带电物种（NH4+ 等），
+这些分子不涉及累积烯烃轴手性，不会触发 `_get_cip_rank` 调用。
